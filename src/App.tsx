@@ -39,6 +39,19 @@ type AnaliseASG = {
   sobreposicao_ti?: string;
 };
 
+type InpeStats = {
+  prodes: number;
+  prodes_area_ha: number;
+  deter: number;
+  focos: number;
+};
+
+type InpeFeature = {
+  id: number;
+  geometria?: { type: string; coordinates: unknown };
+  [key: string]: unknown;
+};
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const THEME_KEY = 'stratos-theme';
@@ -143,8 +156,12 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [propriedade, setPropriedade] = useState<PropriedadeBackend | null>(null);
   const [analiseASG, setAnaliseASG] = useState<AnaliseASG | null>(null);
+  const [inpeStats, setInpeStats] = useState<InpeStats | null>(null);
   const [dbStatus, setDbStatus] = useState<DbStatus>('checking');
   const [dbMessage, setDbMessage] = useState('Verificando banco...');
+  const [inpeProdesCount, setInpeProdesCount] = useState<number | null>(null);
+  const [inpeDeterCount, setInpeDeterCount] = useState<number | null>(null);
+  const [inpeFocosCount, setInpeFocosCount] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 1, role: 'incoming', text: 'Olá! Busque uma propriedade pelo código CAR para consultas ASG.' }
@@ -157,6 +174,9 @@ export default function App() {
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const resultLayerRef = useRef<L.LayerGroup | null>(null);
   const neighborsLayerRef = useRef<L.LayerGroup | null>(null);
+  const prodesLayerRef = useRef<L.LayerGroup | null>(null);
+  const deterLayerRef = useRef<L.LayerGroup | null>(null);
+  const focosLayerRef = useRef<L.LayerGroup | null>(null);
 
   // Toast helpers
   const dismissToast = useCallback((id: number) => {
@@ -187,11 +207,14 @@ export default function App() {
         if (!active) return;
         if (p['sicarSpDisponivel'] === true) {
           setDbStatus('available');
-          setDbMessage(`Banco com ${String(p['total_sp'] ?? p['total'] ?? '?')} propriedades SP.`);
+          setDbMessage(`SICAR: ${String(p['total_sp'] ?? p['total'] ?? '?')} propriedades SP.`);
         } else {
           setDbStatus('unavailable');
           setDbMessage('Sem cache SP — busca ingere sob demanda.');
         }
+        if (typeof p['total_prodes'] === 'number') setInpeProdesCount(p['total_prodes']);
+        if (typeof p['total_deter'] === 'number') setInpeDeterCount(p['total_deter']);
+        if (typeof p['total_focos'] === 'number') setInpeFocosCount(p['total_focos']);
       })
       .catch(() => {
         if (!active) return;
@@ -224,10 +247,13 @@ export default function App() {
     tileLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap'
     }).addTo(map);
+    prodesLayerRef.current = L.layerGroup().addTo(map);
+    deterLayerRef.current = L.layerGroup().addTo(map);
+    focosLayerRef.current = L.layerGroup().addTo(map);
     neighborsLayerRef.current = L.layerGroup().addTo(map);
     resultLayerRef.current = L.layerGroup().addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
-    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; };
+    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; };
   }, []);
 
   // Tile ao mudar tema
@@ -241,6 +267,88 @@ export default function App() {
     tileLayerRef.current = next;
   }, [theme]);
 
+  // Carrega overlays INPE usando queries espaciais (ST_Intersects / ST_DWithin)
+  const carregarInpe = useCallback(async (codImovel: string) => {
+    prodesLayerRef.current?.clearLayers();
+    deterLayerRef.current?.clearLayers();
+    focosLayerRef.current?.clearLayers();
+    setInpeStats(null);
+
+    // PRODES — ST_Intersects com a propriedade (laranja)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/desmatamento-prodes/por-propriedade/${encodeURIComponent(codImovel)}`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = prodesLayerRef.current;
+        if (!layer) return;
+        let totalHa = 0;
+        for (const p of list) {
+          if (!p.geometria) continue;
+          totalHa += ((p['area_km2'] as number) ?? 0) * 100;
+          L.geoJSON(p.geometria as GeoJSON.Geometry, {
+            style: { color: '#d97706', weight: 1.5, fillColor: '#fbbf24', fillOpacity: 0.35 }
+          }).bindTooltip(
+            `PRODES ${p['ano'] ?? ''} · ${p['area_km2'] != null ? `${(p['area_km2'] as number).toFixed(2)} km²` : ''}`,
+            { sticky: true, opacity: 0.9 }
+          ).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), prodes: list.length, prodes_area_ha: Math.round(totalHa) }));
+        if (list.length > 0) addToast('warning', `PRODES: ${list.length} polígono(s) na propriedade`, `~${Math.round(totalHa)} ha desmatados`);
+      } catch { /* silently ignore */ }
+    })();
+
+    // DETER — ST_Intersects com a propriedade (vermelho)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/alerta-deter/por-propriedade/${encodeURIComponent(codImovel)}`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = deterLayerRef.current;
+        if (!layer) return;
+        for (const d of list) {
+          if (!d.geometria) continue;
+          L.geoJSON(d.geometria as GeoJSON.Geometry, {
+            style: { color: '#dc2626', weight: 1.5, fillColor: '#f87171', fillOpacity: 0.4 }
+          }).bindTooltip(`DETER · ${d['classname'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), deter: list.length }));
+        if (list.length > 0) addToast('error', `DETER: ${list.length} alerta(s) na propriedade`, 'Sobreposição direta detectada');
+      } catch { /* silently ignore */ }
+    })();
+
+    // Focos — ST_DWithin 10 km da propriedade (amarelo)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/foco-queimada/por-propriedade/${encodeURIComponent(codImovel)}?buffer_m=10000`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = focosLayerRef.current;
+        if (!layer) return;
+        for (const f of list) {
+          const lat = f['latitude'] as number | undefined;
+          const lon = f['longitude'] as number | undefined;
+          if (lat == null || lon == null) continue;
+          L.circleMarker([lat, lon], {
+            radius: 4, color: '#92400e', weight: 1,
+            fillColor: '#f59e0b', fillOpacity: 0.75
+          }).bindTooltip(
+            `Foco · ${f['satelite'] ?? ''} · ${f['data_hora_gmt'] ? new Date(f['data_hora_gmt'] as string).toLocaleDateString('pt-BR') : ''}`,
+            { sticky: true, opacity: 0.9 }
+          ).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), focos: list.length }));
+        if (list.length > 0) addToast('warning', `Queimadas: ${list.length} foco(s) (raio 10 km)`, 'Detectados 2016–2025');
+      } catch { /* silently ignore */ }
+    })();
+  }, [addToast]);
+
   // Busca
   const handleSearch = async () => {
     const query = searchValue.trim();
@@ -250,8 +358,12 @@ export default function App() {
 
     resultLayer.clearLayers();
     neighborsLayerRef.current?.clearLayers();
+    prodesLayerRef.current?.clearLayers();
+    deterLayerRef.current?.clearLayers();
+    focosLayerRef.current?.clearLayers();
     setPropriedade(null);
     setAnaliseASG(null);
+    setInpeStats(null);
     if (!query) return;
 
     // Coordenadas
@@ -305,7 +417,10 @@ export default function App() {
         addToast('success', 'Propriedade encontrada',
           `${prop.municipio ?? ''}${prop.uf ? `/${prop.uf}` : ''}${prop.area ? ` · ${prop.area.toFixed(1)} ha` : ''}`);
 
-        // Load neighbors in the same municipality (background layer)
+        // Dados INPE espacialmente sobrepostos à propriedade (ST_Intersects / ST_DWithin)
+        void carregarInpe(prop.cod_imovel);
+
+        // Propriedades vizinhas (background layer)
         if (prop.municipio && prop.uf) {
           void (async () => {
             try {
@@ -370,12 +485,12 @@ export default function App() {
   };
 
   const asgRows = analiseASG ? [
-    { eixo: 'Ambiental', indicador: 'APP',   valor: analiseASG.deficit_app_ha            != null ? `${analiseASG.deficit_app_ha} ha`            : '—' },
-    { eixo: 'Ambiental', indicador: 'RL',    valor: analiseASG.deficit_reserva_legal_ha  != null ? `${analiseASG.deficit_reserva_legal_ha} ha`  : '—' },
-    { eixo: 'Ambiental', indicador: 'DETER', valor: analiseASG.area_desmatada_ha         != null ? `${analiseASG.area_desmatada_ha} ha`         : '—' },
-    { eixo: 'Social',    indicador: 'UCs',   valor: analiseASG.sobreposicao_uc  ?? '—' },
-    { eixo: 'Social',    indicador: 'TI',    valor: analiseASG.sobreposicao_ti  ?? '—' },
-    { eixo: 'Governança',indicador: 'CAR',   valor: propriedade?.status_imovel  ?? '—' },
+    { eixo: 'Ambiental', indicador: 'Desmat. PRODES', valor: analiseASG.area_desmatada_ha != null ? `${analiseASG.area_desmatada_ha} ha` : '—' },
+    { eixo: 'Ambiental', indicador: 'Déficit APP',    valor: analiseASG.deficit_app_ha != null ? `${analiseASG.deficit_app_ha} ha` : '—' },
+    { eixo: 'Ambiental', indicador: 'Déficit RL',     valor: analiseASG.deficit_reserva_legal_ha != null ? `${analiseASG.deficit_reserva_legal_ha} ha` : '—' },
+    { eixo: 'Social',    indicador: 'UCs',            valor: analiseASG.sobreposicao_uc ?? '—' },
+    { eixo: 'Social',    indicador: 'TI',             valor: analiseASG.sobreposicao_ti ?? '—' },
+    { eixo: 'Governança', indicador: 'CAR',           valor: propriedade?.status_imovel ?? '—' },
   ] : [];
 
   return (
@@ -430,6 +545,42 @@ export default function App() {
                 <span className="data-status-message">{dbMessage}</span>
               </div>
 
+              <div className="data-status-row" aria-live="polite">
+                <div className="data-status-header">
+                  <span className={`data-status-dot ${inpeProdesCount === null ? 'is-checking' : inpeProdesCount > 0 ? 'is-available' : 'is-unavailable'}`} />
+                  <strong className="data-status-label">
+                    PRODES-SP: {inpeProdesCount === null ? 'Verificando...' : inpeProdesCount > 0 ? 'Disponível' : 'Sem dados'}
+                  </strong>
+                </div>
+                <span className="data-status-message">
+                  {inpeProdesCount === null ? '' : inpeProdesCount > 0 ? `${inpeProdesCount.toLocaleString('pt-BR')} polígonos` : 'Nenhum polígono ingerido'}
+                </span>
+              </div>
+
+              <div className="data-status-row" aria-live="polite">
+                <div className="data-status-header">
+                  <span className={`data-status-dot ${inpeDeterCount === null ? 'is-checking' : inpeDeterCount > 0 ? 'is-available' : 'is-unavailable'}`} />
+                  <strong className="data-status-label">
+                    DETER-SP: {inpeDeterCount === null ? 'Verificando...' : inpeDeterCount > 0 ? 'Disponível' : 'Sem dados'}
+                  </strong>
+                </div>
+                <span className="data-status-message">
+                  {inpeDeterCount === null ? '' : inpeDeterCount > 0 ? `${inpeDeterCount.toLocaleString('pt-BR')} alertas` : 'Nenhum alerta ingerido'}
+                </span>
+              </div>
+
+              <div className="data-status-row" aria-live="polite">
+                <div className="data-status-header">
+                  <span className={`data-status-dot ${inpeFocosCount === null ? 'is-checking' : inpeFocosCount > 0 ? 'is-available' : 'is-unavailable'}`} />
+                  <strong className="data-status-label">
+                    Queimadas-SP: {inpeFocosCount === null ? 'Verificando...' : inpeFocosCount > 0 ? 'Disponível' : 'Sem dados'}
+                  </strong>
+                </div>
+                <span className="data-status-message">
+                  {inpeFocosCount === null ? '' : inpeFocosCount > 0 ? `${inpeFocosCount.toLocaleString('pt-BR')} focos (2016–2025)` : 'Nenhum foco ingerido'}
+                </span>
+              </div>
+
               {propriedade && (
                 <div className="data-status-row">
                   <div className="data-status-header">
@@ -445,6 +596,24 @@ export default function App() {
                   {propriedade.cod_municipio_ibge && <span className="data-status-message">IBGE: {propriedade.cod_municipio_ibge}</span>}
                   {propriedade.m_fiscal && <span className="data-status-message">Módulo fiscal: {propriedade.m_fiscal}</span>}
                   {propriedade.dat_criacao && <span className="data-status-message">Criado: {new Date(propriedade.dat_criacao).toLocaleDateString('pt-BR')}</span>}
+                </div>
+              )}
+
+              {inpeStats && (
+                <div className="data-status-row">
+                  <div className="data-status-header">
+                    <span className="data-status-dot" style={{ background: '#d97706' }} />
+                    <strong className="data-status-label">Sobreposição INPE na propriedade</strong>
+                  </div>
+                  <span className="data-status-message" style={{ color: '#d97706' }}>
+                    PRODES: {inpeStats.prodes} polígono(s) · {inpeStats.prodes_area_ha} ha
+                  </span>
+                  <span className="data-status-message" style={{ color: '#dc2626' }}>
+                    DETER: {inpeStats.deter} alerta(s) sobrepostos
+                  </span>
+                  <span className="data-status-message" style={{ color: '#f59e0b' }}>
+                    Queimadas: {inpeStats.focos} foco(s) dentro da propriedade
+                  </span>
                 </div>
               )}
             </section>
@@ -481,16 +650,34 @@ export default function App() {
                   {propriedade?.status_imovel && (
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
-                  <div className="unavailable-panel">
-                    <span className="unavailable-panel-icon">
-                      <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
-                    </span>
-                    <div>
-                      <strong>Análise ASG indisponível</strong>
-                      <p>O módulo de cruzamento ambiental, social e de governança ainda está em desenvolvimento.</p>
+
+                  {analiseASG ? (
+                    <table className="asg-table">
+                      <thead>
+                        <tr><th>Eixo</th><th>Indicador</th><th>Valor</th></tr>
+                      </thead>
+                      <tbody>
+                        {asgRows.map((r, i) => (
+                          <tr key={i}>
+                            <td>{r.eixo}</td>
+                            <td>{r.indicador}</td>
+                            <td>{r.valor}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="unavailable-panel">
+                      <span className="unavailable-panel-icon">
+                        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
+                      </span>
+                      <div>
+                        <strong>Análise ASG indisponível</strong>
+                        <p>O módulo de cruzamento ambiental, social e de governança ainda está em desenvolvimento.</p>
+                      </div>
+                      <button className="unavailable-btn" disabled>Em breve</button>
                     </div>
-                    <button className="unavailable-btn" disabled>Em breve</button>
-                  </div>
+                  )}
                 </div>
               </section>
 
@@ -500,20 +687,24 @@ export default function App() {
                   {propriedade && <span>{propriedade.cod_imovel}</span>}
                 </header>
                 <div className="chat-placeholder-body">
-                  <div className="unavailable-panel">
-                    <span className="unavailable-panel-icon">
-                      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    </span>
-                    <div>
-                      <strong>Chatbot indisponível</strong>
-                      <p>O assistente de linguagem natural para consultas ASG ainda está em desenvolvimento.</p>
+                  {chatMessages.map((m) => (
+                    <div key={m.id} className={`chat-msg chat-msg-${m.role}`}>
+                      <span>{m.text}</span>
                     </div>
-                    <button className="unavailable-btn" disabled>Em breve</button>
-                  </div>
+                  ))}
                 </div>
-                <footer className="chat-placeholder-footer is-disabled">
-                  <input type="text" placeholder="Indisponível no momento..." disabled />
-                  <button type="button" disabled>Enviar</button>
+                <footer className="chat-placeholder-footer">
+                  <input
+                    type="text"
+                    placeholder={propriedade ? 'Pergunte sobre esta propriedade...' : 'Busque um CAR primeiro...'}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
+                    disabled={!propriedade}
+                  />
+                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim()}>
+                    Enviar
+                  </button>
                 </footer>
               </section>
             </div>
