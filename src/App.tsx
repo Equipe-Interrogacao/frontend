@@ -46,6 +46,13 @@ type InpeStats = {
   focos: number;
 };
 
+type AreasProtegidasStats = {
+  uc: { cod_uc: string; nome?: string }[];
+  ti: { cod_ti: string; nome?: string; etnia?: string }[];
+  assentamento: { cod_sipra: string; nome?: string }[];
+  quilombola: { cod_quilombola: string; nome?: string }[];
+};
+
 type InpeFeature = {
   id: number;
   geometria?: { type: string; coordinates: unknown };
@@ -157,11 +164,16 @@ export default function App() {
   const [propriedade, setPropriedade] = useState<PropriedadeBackend | null>(null);
   const [analiseASG, setAnaliseASG] = useState<AnaliseASG | null>(null);
   const [inpeStats, setInpeStats] = useState<InpeStats | null>(null);
+  const [areasProtegidasStats, setAreasProtegidasStats] = useState<AreasProtegidasStats | null>(null);
   const [dbStatus, setDbStatus] = useState<DbStatus>('checking');
   const [dbMessage, setDbMessage] = useState('Verificando banco...');
   const [inpeProdesCount, setInpeProdesCount] = useState<number | null>(null);
   const [inpeDeterCount, setInpeDeterCount] = useState<number | null>(null);
   const [inpeFocosCount, setInpeFocosCount] = useState<number | null>(null);
+  const [ucCount, setUcCount] = useState<number | null>(null);
+  const [tiCount, setTiCount] = useState<number | null>(null);
+  const [assentamentoCount, setAssentamentoCount] = useState<number | null>(null);
+  const [quilombolaCount, setQuilombolaCount] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 1, role: 'incoming', text: 'Olá! Busque uma propriedade pelo código CAR para consultas ASG.' }
@@ -177,6 +189,20 @@ export default function App() {
   const prodesLayerRef = useRef<L.LayerGroup | null>(null);
   const deterLayerRef = useRef<L.LayerGroup | null>(null);
   const focosLayerRef = useRef<L.LayerGroup | null>(null);
+  const ucLayerRef = useRef<L.LayerGroup | null>(null);
+  const tiLayerRef = useRef<L.LayerGroup | null>(null);
+  const assentamentoLayerRef = useRef<L.LayerGroup | null>(null);
+  const quilombolaLayerRef = useRef<L.LayerGroup | null>(null);
+
+  type LayerId = 'prodes' | 'deter' | 'queimadas' | 'uc' | 'ti' | 'assentamento' | 'quilombola';
+  const [layerVisible, setLayerVisible] = useState<Record<LayerId, boolean>>({
+    prodes: false, deter: false, queimadas: false,
+    uc: false, ti: false, assentamento: false, quilombola: false,
+  });
+  const layerLoadingRef = useRef<Record<LayerId, boolean>>({
+    prodes: false, deter: false, queimadas: false,
+    uc: false, ti: false, assentamento: false, quilombola: false,
+  });
 
   // Toast helpers
   const dismissToast = useCallback((id: number) => {
@@ -215,6 +241,10 @@ export default function App() {
         if (typeof p['total_prodes'] === 'number') setInpeProdesCount(p['total_prodes']);
         if (typeof p['total_deter'] === 'number') setInpeDeterCount(p['total_deter']);
         if (typeof p['total_focos'] === 'number') setInpeFocosCount(p['total_focos']);
+        if (typeof p['total_uc'] === 'number') setUcCount(p['total_uc']);
+        if (typeof p['total_ti'] === 'number') setTiCount(p['total_ti']);
+        if (typeof p['total_assentamento'] === 'number') setAssentamentoCount(p['total_assentamento']);
+        if (typeof p['total_quilombola'] === 'number') setQuilombolaCount(p['total_quilombola']);
       })
       .catch(() => {
         if (!active) return;
@@ -250,10 +280,14 @@ export default function App() {
     prodesLayerRef.current = L.layerGroup().addTo(map);
     deterLayerRef.current = L.layerGroup().addTo(map);
     focosLayerRef.current = L.layerGroup().addTo(map);
+    ucLayerRef.current = L.layerGroup().addTo(map);
+    tiLayerRef.current = L.layerGroup().addTo(map);
+    assentamentoLayerRef.current = L.layerGroup().addTo(map);
+    quilombolaLayerRef.current = L.layerGroup().addTo(map);
     neighborsLayerRef.current = L.layerGroup().addTo(map);
     resultLayerRef.current = L.layerGroup().addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
-    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; };
+    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; ucLayerRef.current = null; tiLayerRef.current = null; assentamentoLayerRef.current = null; quilombolaLayerRef.current = null; };
   }, []);
 
   // Tile ao mudar tema
@@ -349,6 +383,124 @@ export default function App() {
     })();
   }, [addToast]);
 
+  const toggleCamada = useCallback(async (id: LayerId) => {
+    const isOn = !layerVisible[id];
+    setLayerVisible(prev => ({ ...prev, [id]: isOn }));
+
+    const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
+      prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
+      uc: ucLayerRef, ti: tiLayerRef, assentamento: assentamentoLayerRef, quilombola: quilombolaLayerRef,
+    };
+    const layer = layerMap[id].current;
+    if (!layer) return;
+
+    if (!isOn) { layer.clearLayers(); return; }
+    if (layerLoadingRef.current[id]) return;
+    layerLoadingRef.current[id] = true;
+    layer.clearLayers();
+
+    const configs: Record<LayerId, { url: string; render: (f: InpeFeature, layer: L.LayerGroup) => void }> = {
+      prodes: {
+        url: '/gerenciamento_banco/banco/desmatamento-prodes?uf=SP&limit=1000',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#d97706', weight: 1, fillColor: '#fbbf24', fillOpacity: 0.3 }
+          }).bindTooltip(`PRODES ${f['ano'] ?? ''} · ${f['area_km2'] != null ? `${(f['area_km2'] as number).toFixed(2)} km²` : ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      deter: {
+        url: '/gerenciamento_banco/banco/alerta-deter?uf=SP&limit=1000',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#dc2626', weight: 1, fillColor: '#f87171', fillOpacity: 0.35 }
+          }).bindTooltip(`DETER · ${f['classname'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      queimadas: {
+        url: '/gerenciamento_banco/banco/foco-queimada?estado=SP&limit=2000',
+        render: (f, l) => {
+          const lat = f['latitude'] as number | undefined;
+          const lon = f['longitude'] as number | undefined;
+          if (lat == null || lon == null) return;
+          L.circleMarker([lat, lon], { radius: 3, color: '#92400e', weight: 1, fillColor: '#f59e0b', fillOpacity: 0.7 })
+            .bindTooltip(`Foco · ${f['satelite'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      uc: {
+        url: '/gerenciamento_banco/banco/unidade-conservacao?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#059669', weight: 1.5, fillColor: '#34d399', fillOpacity: 0.3 }
+          }).bindTooltip(`UC: ${f['nome'] ?? f['cod_uc'] ?? ''} · ${f['categoria'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      ti: {
+        url: '/gerenciamento_banco/banco/terra-indigena?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#7c3aed', weight: 1.5, fillColor: '#a78bfa', fillOpacity: 0.35 }
+          }).bindTooltip(`TI: ${f['nome'] ?? f['cod_ti'] ?? ''} · ${f['etnia'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      assentamento: {
+        url: '/gerenciamento_banco/banco/assentamento?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#b45309', weight: 1.5, fillColor: '#fcd34d', fillOpacity: 0.3 }
+          }).bindTooltip(`Assentamento: ${f['nome'] ?? f['cod_sipra'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      quilombola: {
+        url: '/gerenciamento_banco/banco/quilombola?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#be185d', weight: 1.5, fillColor: '#f472b6', fillOpacity: 0.3 }
+          }).bindTooltip(`Quilombola: ${f['nome'] ?? f['cod_quilombola'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+    };
+
+    try {
+      const r = await fetch(configs[id].url);
+      if (!r.ok) return;
+      const list = await r.json() as InpeFeature[];
+      for (const f of list) configs[id].render(f, layer);
+    } catch { /* silently ignore */ } finally {
+      layerLoadingRef.current[id] = false;
+    }
+  }, [layerVisible]);
+
+  const carregarAreasProtegidas = useCallback(async (codImovel: string) => {
+    setAreasProtegidasStats(null);
+    const base = `/gerenciamento_banco/banco`;
+    const endpoints: [keyof AreasProtegidasStats, string][] = [
+      ['uc', 'unidade-conservacao'],
+      ['ti', 'terra-indigena'],
+      ['assentamento', 'assentamento'],
+      ['quilombola', 'quilombola'],
+    ];
+    const result: AreasProtegidasStats = { uc: [], ti: [], assentamento: [], quilombola: [] };
+    await Promise.all(
+      endpoints.map(async ([chave, path]) => {
+        try {
+          const r = await fetch(`${base}/${path}/por-propriedade/${encodeURIComponent(codImovel)}`);
+          if (r.ok) result[chave] = await r.json();
+        } catch { /* silently ignore */ }
+      })
+    );
+    setAreasProtegidasStats(result);
+    const n_ti = result.ti.length;
+    const n_uc = result.uc.length;
+    if (n_ti > 0) addToast('error', `Terra Indígena: ${n_ti} sobreposição(ões)`, result.ti.map(t => t.nome ?? t.cod_ti).join(', '));
+    if (n_uc > 0) addToast('warning', `UC: ${n_uc} sobreposição(ões)`, result.uc.map(u => u.nome ?? u.cod_uc).join(', '));
+  }, [addToast]);
+
   // Busca
   const handleSearch = async () => {
     const query = searchValue.trim();
@@ -364,6 +516,7 @@ export default function App() {
     setPropriedade(null);
     setAnaliseASG(null);
     setInpeStats(null);
+    setAreasProtegidasStats(null);
     if (!query) return;
 
     // Coordenadas
@@ -419,6 +572,7 @@ export default function App() {
 
         // Dados INPE espacialmente sobrepostos à propriedade (ST_Intersects / ST_DWithin)
         void carregarInpe(prop.cod_imovel);
+        void carregarAreasProtegidas(prop.cod_imovel);
 
         // Propriedades vizinhas (background layer)
         if (prop.municipio && prop.uf) {
@@ -535,51 +689,9 @@ export default function App() {
             <section className="left-status-panel">
               <h3 className="left-status-title">Status de dados</h3>
 
-              <div className="data-status-row" aria-live="polite">
-                <div className="data-status-header">
-                  <span className={`data-status-dot is-${dbStatus}`} />
-                  <strong className="data-status-label">
-                    SICAR-SP: {dbStatus === 'available' ? 'Disponível' : dbStatus === 'checking' ? 'Verificando...' : 'Sem cache'}
-                  </strong>
-                </div>
-                <span className="data-status-message">{dbMessage}</span>
-              </div>
-
-              <div className="data-status-row" aria-live="polite">
-                <div className="data-status-header">
-                  <span className={`data-status-dot ${inpeProdesCount === null ? 'is-checking' : inpeProdesCount > 0 ? 'is-available' : 'is-unavailable'}`} />
-                  <strong className="data-status-label">
-                    PRODES-SP: {inpeProdesCount === null ? 'Verificando...' : inpeProdesCount > 0 ? 'Disponível' : 'Sem dados'}
-                  </strong>
-                </div>
-                <span className="data-status-message">
-                  {inpeProdesCount === null ? '' : inpeProdesCount > 0 ? `${inpeProdesCount.toLocaleString('pt-BR')} polígonos` : 'Nenhum polígono ingerido'}
-                </span>
-              </div>
-
-              <div className="data-status-row" aria-live="polite">
-                <div className="data-status-header">
-                  <span className={`data-status-dot ${inpeDeterCount === null ? 'is-checking' : inpeDeterCount > 0 ? 'is-available' : 'is-unavailable'}`} />
-                  <strong className="data-status-label">
-                    DETER-SP: {inpeDeterCount === null ? 'Verificando...' : inpeDeterCount > 0 ? 'Disponível' : 'Sem dados'}
-                  </strong>
-                </div>
-                <span className="data-status-message">
-                  {inpeDeterCount === null ? '' : inpeDeterCount > 0 ? `${inpeDeterCount.toLocaleString('pt-BR')} alertas` : 'Nenhum alerta ingerido'}
-                </span>
-              </div>
-
-              <div className="data-status-row" aria-live="polite">
-                <div className="data-status-header">
-                  <span className={`data-status-dot ${inpeFocosCount === null ? 'is-checking' : inpeFocosCount > 0 ? 'is-available' : 'is-unavailable'}`} />
-                  <strong className="data-status-label">
-                    Queimadas-SP: {inpeFocosCount === null ? 'Verificando...' : inpeFocosCount > 0 ? 'Disponível' : 'Sem dados'}
-                  </strong>
-                </div>
-                <span className="data-status-message">
-                  {inpeFocosCount === null ? '' : inpeFocosCount > 0 ? `${inpeFocosCount.toLocaleString('pt-BR')} focos (2016–2025)` : 'Nenhum foco ingerido'}
-                </span>
-              </div>
+              {!propriedade && (
+                <p className="left-status-empty">Busque um imóvel pelo código CAR para visualizar os dados da propriedade.</p>
+              )}
 
               {propriedade && (
                 <div className="data-status-row">
@@ -616,6 +728,35 @@ export default function App() {
                   </span>
                 </div>
               )}
+
+              {areasProtegidasStats && (
+                <div className="data-status-row">
+                  <div className="data-status-header">
+                    <span className="data-status-dot" style={{ background: '#7c3aed' }} />
+                    <strong className="data-status-label">Áreas Protegidas na propriedade</strong>
+                  </div>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.uc.length > 0 ? '#dc2626' : undefined }}>
+                    UC: {areasProtegidasStats.uc.length > 0
+                      ? areasProtegidasStats.uc.map(u => u.nome ?? u.cod_uc).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.ti.length > 0 ? '#dc2626' : undefined }}>
+                    TI: {areasProtegidasStats.ti.length > 0
+                      ? areasProtegidasStats.ti.map(t => t.nome ?? t.cod_ti).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.assentamento.length > 0 ? '#d97706' : undefined }}>
+                    Assentamento: {areasProtegidasStats.assentamento.length > 0
+                      ? areasProtegidasStats.assentamento.map(a => a.nome ?? a.cod_sipra).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.quilombola.length > 0 ? '#d97706' : undefined }}>
+                    Quilombola: {areasProtegidasStats.quilombola.length > 0
+                      ? areasProtegidasStats.quilombola.map(q => q.nome ?? q.cod_quilombola).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                </div>
+              )}
             </section>
           </aside>
 
@@ -631,6 +772,42 @@ export default function App() {
               <button type="button" onClick={() => void handleSearch()} disabled={searching}>
                 {searching ? 'Buscando...' : 'Buscar'}
               </button>
+            </div>
+
+            <div className="layer-toolbar">
+              {([
+                { id: 'prodes',       label: 'PRODES',        color: '#d97706', count: inpeProdesCount,    unit: 'pol.' },
+                { id: 'deter',        label: 'DETER',         color: '#dc2626', count: inpeDeterCount,     unit: 'alertas' },
+                { id: 'queimadas',    label: 'Queimadas',     color: '#f59e0b', count: inpeFocosCount,     unit: 'focos' },
+                { id: 'uc',           label: 'UC',            color: '#059669', count: ucCount,            unit: 'UCs' },
+                { id: 'ti',           label: 'TI',            color: '#7c3aed', count: tiCount,            unit: 'TIs' },
+                { id: 'assentamento', label: 'Assentamentos', color: '#b45309', count: assentamentoCount,  unit: 'ass.' },
+                { id: 'quilombola',   label: 'Quilombolas',   color: '#be185d', count: quilombolaCount,    unit: 'terr.' },
+              ] as { id: LayerId; label: string; color: string; count: number | null; unit: string }[]).map(({ id, label, color, count, unit }) => {
+                const on = layerVisible[id];
+                const dotClass = count === null ? 'is-checking' : count > 0 ? 'is-available' : 'is-unavailable';
+                return (
+                  <button
+                    key={id}
+                    className={`layer-btn${on ? ' layer-btn--on' : ''}`}
+                    style={on ? { borderColor: color, color } : undefined}
+                    onClick={() => void toggleCamada(id)}
+                    title={on ? `Ocultar ${label}` : `Exibir ${label}`}
+                  >
+                    <span className="layer-btn-eye">
+                      {on
+                        ? <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        : <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                      }
+                    </span>
+                    <span className={`data-status-dot layer-btn-dot ${dotClass}`} />
+                    <span className="layer-btn-label">{label}</span>
+                    {count !== null && count > 0 && (
+                      <span className="layer-btn-count">{count.toLocaleString('pt-BR')} {unit}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="map-stage">

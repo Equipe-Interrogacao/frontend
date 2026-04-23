@@ -693,7 +693,7 @@ body {
   overflow: hidden;
   padding: 0.75rem;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
   gap: 0.5rem;
 }
 
@@ -834,6 +834,73 @@ body {
   margin: 0;
   font-size: 0.75rem;
   color: var(--text-soft);
+}
+
+.layer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  background: var(--surface-2, rgba(255,255,255,0.04));
+  border: 1px solid var(--line, rgba(0,0,0,0.08));
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.layer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: transparent;
+  color: var(--text-muted, #8a9bb5);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.layer-btn:hover {
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.35);
+  color: var(--text, #e2e8f0);
+}
+
+.layer-btn--on {
+  background: rgba(255,255,255,0.07);
+  font-weight: 600;
+}
+
+.layer-btn-eye {
+  display: flex;
+  align-items: center;
+}
+
+.layer-btn-dot {
+  width: 7px !important;
+  height: 7px !important;
+  flex-shrink: 0;
+}
+
+.layer-btn-label {
+  font-weight: 600;
+}
+
+.layer-btn-count {
+  font-size: 0.65rem;
+  opacity: 0.7;
+  font-weight: 400;
+}
+
+.left-status-empty {
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  line-height: 1.5;
+  padding: 0.5rem 0.25rem;
 }
 
 .map-stage {
