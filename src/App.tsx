@@ -53,6 +53,27 @@ type AreasProtegidasStats = {
   quilombola: { cod_quilombola: string; nome?: string }[];
 };
 
+type IndicadorASG = {
+  categoria: string;
+  nome: string;
+  fonte: string;
+  data_referencia: string;
+  valor?: number | null;
+  unidade?: string | null;
+  status: 'ok' | 'atencao' | 'critico' | 'pendente';
+  detalhe?: string | null;
+};
+
+type RelatorioASG = {
+  cod_imovel: string;
+  municipio?: string;
+  uf?: string;
+  area_ha?: number;
+  status_car?: string;
+  gerado_em: string;
+  indicadores: IndicadorASG[];
+};
+
 type InpeFeature = {
   id: number;
   geometria?: { type: string; coordinates: unknown };
@@ -163,6 +184,7 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [propriedade, setPropriedade] = useState<PropriedadeBackend | null>(null);
   const [analiseASG, setAnaliseASG] = useState<AnaliseASG | null>(null);
+  const [relatorioASG, setRelatorioASG] = useState<RelatorioASG | null>(null);
   const [inpeStats, setInpeStats] = useState<InpeStats | null>(null);
   const [areasProtegidasStats, setAreasProtegidasStats] = useState<AreasProtegidasStats | null>(null);
   const [dbStatus, setDbStatus] = useState<DbStatus>('checking');
@@ -515,6 +537,7 @@ export default function App() {
     focosLayerRef.current?.clearLayers();
     setPropriedade(null);
     setAnaliseASG(null);
+    setRelatorioASG(null);
     setInpeStats(null);
     setAreasProtegidasStats(null);
     if (!query) return;
@@ -601,14 +624,19 @@ export default function App() {
         addToast('warning', 'Propriedade sem geometria', 'Dados cadastrais encontrados, mas sem polígono no banco.');
       }
 
-      // Análise ASG
-      try {
-        const asgResp = await fetch(`/cruzamento_asg/asg/analises/${encodeURIComponent(cod)}`);
-        if (asgResp.ok) {
-          setAnaliseASG(await asgResp.json() as AnaliseASG);
-          addToast('success', 'Análise ASG carregada');
-        }
-      } catch { /* sem ASG, não é crítico */ }
+      // Análise ASG (legado) + Relatório ASG (novo)
+      void (async () => {
+        try {
+          const asgResp = await fetch(`/cruzamento_asg/asg/analises/${encodeURIComponent(cod)}`);
+          if (asgResp.ok) setAnaliseASG(await asgResp.json() as AnaliseASG);
+        } catch { /* não crítico */ }
+      })();
+      void (async () => {
+        try {
+          const relResp = await fetch(`/cruzamento_asg/asg/relatorio/${encodeURIComponent(cod)}`);
+          if (relResp.ok) setRelatorioASG(await relResp.json() as RelatorioASG);
+        } catch { /* não crítico */ }
+      })();
 
     } catch (err) {
       addToast('error', 'Erro de rede', err instanceof Error ? err.message : 'Erro desconhecido');
@@ -828,31 +856,55 @@ export default function App() {
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
 
-                  {analiseASG ? (
-                    <table className="asg-table">
-                      <thead>
-                        <tr><th>Eixo</th><th>Indicador</th><th>Valor</th></tr>
-                      </thead>
-                      <tbody>
-                        {asgRows.map((r, i) => (
-                          <tr key={i}>
-                            <td>{r.eixo}</td>
-                            <td>{r.indicador}</td>
-                            <td>{r.valor}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  {relatorioASG ? (
+                    <div className="asg-indicadores">
+                      {(['Ambiental', 'Social', 'Governança'] as const).map((cat) => {
+                        const itens = relatorioASG.indicadores.filter(i => i.categoria === cat);
+                        if (!itens.length) return null;
+                        return (
+                          <div key={cat} className="asg-categoria-group">
+                            <span className="asg-categoria-label">{cat}</span>
+                            {itens.map((ind, idx) => (
+                              <div key={idx} className="asg-indicador-row">
+                                <div className="asg-indicador-main">
+                                  <span className="asg-indicador-nome">{ind.nome}</span>
+                                  <span className={`asg-status-badge asg-status-${ind.status}`}>
+                                    {ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente'}
+                                  </span>
+                                </div>
+                                <div className="asg-indicador-valor">
+                                  {ind.valor != null
+                                    ? <strong>{ind.valor.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} {ind.unidade}</strong>
+                                    : ind.detalhe
+                                      ? <strong>{ind.detalhe}</strong>
+                                      : <span>—</span>
+                                  }
+                                  {ind.valor != null && ind.detalhe && (
+                                    <span className="asg-indicador-detalhe">{ind.detalhe}</span>
+                                  )}
+                                </div>
+                                <div className="asg-indicador-meta">
+                                  {ind.fonte} · {ind.data_referencia}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : propriedade ? (
+                    <div className="asg-loading-panel">
+                      <span className="asg-loading-text">Carregando indicadores ASG...</span>
+                    </div>
                   ) : (
                     <div className="unavailable-panel">
                       <span className="unavailable-panel-icon">
                         <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
                       </span>
                       <div>
-                        <strong>Análise ASG indisponível</strong>
-                        <p>O módulo de cruzamento ambiental, social e de governança ainda está em desenvolvimento.</p>
+                        <strong>Relatório ASG</strong>
+                        <p>Busque um imóvel pelo código CAR para visualizar os indicadores ASG.</p>
                       </div>
-                      <button className="unavailable-btn" disabled>Em breve</button>
                     </div>
                   )}
                 </div>
