@@ -74,6 +74,12 @@ type RelatorioASG = {
   indicadores: IndicadorASG[];
 };
 
+type ResumoASGConsolidado = {
+  indice_risco: number;
+  nivel: 'baixo' | 'medio' | 'alto';
+  desmatamento_relativo?: number | null;
+};
+
 type InpeFeature = {
   id: number;
   geometria?: { type: string; coordinates: unknown };
@@ -185,6 +191,7 @@ export default function App() {
   const [propriedade, setPropriedade] = useState<PropriedadeBackend | null>(null);
   const [analiseASG, setAnaliseASG] = useState<AnaliseASG | null>(null);
   const [relatorioASG, setRelatorioASG] = useState<RelatorioASG | null>(null);
+  const [resumoASG, setResumoASG] = useState<ResumoASGConsolidado | null>(null);
   const [inpeStats, setInpeStats] = useState<InpeStats | null>(null);
   const [areasProtegidasStats, setAreasProtegidasStats] = useState<AreasProtegidasStats | null>(null);
   const [dbStatus, setDbStatus] = useState<DbStatus>('checking');
@@ -538,6 +545,7 @@ export default function App() {
     setPropriedade(null);
     setAnaliseASG(null);
     setRelatorioASG(null);
+    setResumoASG(null);
     setInpeStats(null);
     setAreasProtegidasStats(null);
     if (!query) return;
@@ -635,6 +643,15 @@ export default function App() {
         try {
           const relResp = await fetch(`/cruzamento_asg/asg/relatorio/${encodeURIComponent(cod)}`);
           if (relResp.ok) setRelatorioASG(await relResp.json() as RelatorioASG);
+        } catch { /* não crítico */ }
+      })();
+      void (async () => {
+        try {
+          const consResp = await fetch(`/cruzamento_asg/relatorio/car/${encodeURIComponent(cod)}/asg`);
+          if (consResp.ok) {
+            const data = await consResp.json() as { resumo_asg: ResumoASGConsolidado };
+            setResumoASG(data.resumo_asg);
+          }
         } catch { /* não crítico */ }
       })();
 
@@ -849,7 +866,24 @@ export default function App() {
               <section className="asg-report-panel">
                 <header className="asg-report-header">
                   <h3>Reports ASG</h3>
-                  <span>{propriedade?.cod_imovel ?? '—'}</span>
+                  <div className="asg-header-actions">
+                    {resumoASG && (
+                      <span className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}>
+                        Risco {resumoASG.nivel} · {resumoASG.indice_risco.toFixed(0)}/100
+                      </span>
+                    )}
+                    {propriedade && (
+                      <a
+                        className="asg-export-btn"
+                        href={`/cruzamento_asg/relatorio/car/${encodeURIComponent(propriedade.cod_imovel)}/asg/export?formato=gpkg`}
+                        download
+                        title="Exportar GeoPackage para QGIS"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M3 17v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/></svg>
+                        GPKG
+                      </a>
+                    )}
+                  </div>
                 </header>
                 <div className="asg-report-content">
                   {propriedade?.status_imovel && (
