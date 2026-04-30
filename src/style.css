@@ -343,9 +343,9 @@ body {
   white-space: nowrap;
   text-transform: capitalize;
 }
-.asg-risco-baixo  { background: #d1fae5; color: #065f46; }
-.asg-risco-medio  { background: #fef3c7; color: #92400e; }
-.asg-risco-alto   { background: #fee2e2; color: #991b1b; }
+.asg-risco-baixo  { background: #dcfce7; color: #15803d; }
+.asg-risco-medio  { background: #fef9c3; color: #a16207; }
+.asg-risco-alto   { background: #ffe4e6; color: #be123c; }
 
 .asg-export-btn {
   display: inline-flex;
@@ -375,13 +375,13 @@ body {
 }
 
 @media (prefers-color-scheme: dark) {
-  .asg-risco-baixo { background: #064e3b; color: #6ee7b7; }
-  .asg-risco-medio { background: #78350f; color: #fde68a; }
-  .asg-risco-alto  { background: #7f1d1d; color: #fca5a5; }
+  .asg-risco-baixo { background: #bbf7d0; color: #14532d; }
+  .asg-risco-medio { background: #fef08a; color: #713f12; }
+  .asg-risco-alto  { background: #fecdd3; color: #881337; }
 }
-[data-theme="dark"] .asg-risco-baixo { background: #064e3b; color: #6ee7b7; }
-[data-theme="dark"] .asg-risco-medio { background: #78350f; color: #fde68a; }
-[data-theme="dark"] .asg-risco-alto  { background: #7f1d1d; color: #fca5a5; }
+[data-theme="dark"] .asg-risco-baixo { background: #bbf7d0; color: #14532d; }
+[data-theme="dark"] .asg-risco-medio { background: #fef08a; color: #713f12; }
+[data-theme="dark"] .asg-risco-alto  { background: #fecdd3; color: #881337; }
 
 .asg-report-content {
   flex: 1;
