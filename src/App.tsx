@@ -39,6 +39,69 @@ type AnaliseASG = {
   sobreposicao_ti?: string;
 };
 
+type InpeStats = {
+  prodes: number;
+  prodes_area_ha: number;
+  deter: number;
+  focos: number;
+};
+
+type AreasProtegidasStats = {
+  uc: { cod_uc: string; nome?: string }[];
+  ti: { cod_ti: string; nome?: string; etnia?: string }[];
+  assentamento: { cod_sipra: string; nome?: string }[];
+  quilombola: { cod_quilombola: string; nome?: string }[];
+};
+
+type IndicadorASG = {
+  categoria: string;
+  nome: string;
+  fonte: string;
+  data_referencia: string;
+  valor?: number | null;
+  unidade?: string | null;
+  status: 'ok' | 'atencao' | 'critico' | 'pendente';
+  detalhe?: string | null;
+};
+
+type RelatorioASG = {
+  cod_imovel: string;
+  municipio?: string;
+  uf?: string;
+  area_ha?: number;
+  status_car?: string;
+  gerado_em: string;
+  indicadores: IndicadorASG[];
+};
+
+type InpeFeature = {
+  id: number;
+  geometria?: { type: string; coordinates: unknown };
+  [key: string]: unknown;
+};
+
+type FonteId = 'sicar' | 'prodes' | 'deter' | 'queimadas' | 'ucs' | 'tis' | 'assentamentos' | 'quilombolas';
+
+type FonteAtualizacao = {
+  id: FonteId;
+  nome: string;
+  status: 'checking' | 'up-to-date' | 'update-available' | 'updating' | 'error';
+  ultima_atualizacao?: string;
+  total_registros?: number;
+  progresso?: number;
+};
+
+const FONTES_INICIAIS: FonteAtualizacao[] = [
+  { id: 'sicar', nome: 'SICAR', status: 'checking' },
+  { id: 'prodes', nome: 'PRODES', status: 'checking' },
+  { id: 'deter', nome: 'DETER', status: 'checking' },
+  { id: 'queimadas', nome: 'Queimadas', status: 'checking' },
+  { id: 'ucs', nome: 'Unidades de Conservação', status: 'checking' },
+  { id: 'tis', nome: 'Terras Indígenas', status: 'checking' },
+  { id: 'assentamentos', nome: 'Assentamentos', status: 'checking' },
+  { id: 'quilombolas', nome: 'Quilombolas', status: 'checking' },
+];
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const THEME_KEY = 'stratos-theme';
@@ -143,8 +206,18 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [propriedade, setPropriedade] = useState<PropriedadeBackend | null>(null);
   const [analiseASG, setAnaliseASG] = useState<AnaliseASG | null>(null);
+  const [relatorioASG, setRelatorioASG] = useState<RelatorioASG | null>(null);
+  const [inpeStats, setInpeStats] = useState<InpeStats | null>(null);
+  const [areasProtegidasStats, setAreasProtegidasStats] = useState<AreasProtegidasStats | null>(null);
   const [dbStatus, setDbStatus] = useState<DbStatus>('checking');
   const [dbMessage, setDbMessage] = useState('Verificando banco...');
+  const [inpeProdesCount, setInpeProdesCount] = useState<number | null>(null);
+  const [inpeDeterCount, setInpeDeterCount] = useState<number | null>(null);
+  const [inpeFocosCount, setInpeFocosCount] = useState<number | null>(null);
+  const [ucCount, setUcCount] = useState<number | null>(null);
+  const [tiCount, setTiCount] = useState<number | null>(null);
+  const [assentamentoCount, setAssentamentoCount] = useState<number | null>(null);
+  const [quilombolaCount, setQuilombolaCount] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 1, role: 'incoming', text: 'Olá! Busque uma propriedade pelo código CAR para consultas ASG.' }
@@ -157,6 +230,31 @@ export default function App() {
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const resultLayerRef = useRef<L.LayerGroup | null>(null);
   const neighborsLayerRef = useRef<L.LayerGroup | null>(null);
+  const prodesLayerRef = useRef<L.LayerGroup | null>(null);
+  const deterLayerRef = useRef<L.LayerGroup | null>(null);
+  const focosLayerRef = useRef<L.LayerGroup | null>(null);
+  const ucLayerRef = useRef<L.LayerGroup | null>(null);
+  const tiLayerRef = useRef<L.LayerGroup | null>(null);
+  const assentamentoLayerRef = useRef<L.LayerGroup | null>(null);
+  const quilombolaLayerRef = useRef<L.LayerGroup | null>(null);
+
+  // Auth & Admin States
+  const [authUser, setAuthUser] = useState('');
+  const [authPass, setAuthPass] = useState('');
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [fontesAdmin, setFontesAdmin] = useState<FonteAtualizacao[]>(FONTES_INICIAIS);
+
+  type LayerId = 'prodes' | 'deter' | 'queimadas' | 'uc' | 'ti' | 'assentamento' | 'quilombola';
+  const [layerVisible, setLayerVisible] = useState<Record<LayerId, boolean>>({
+    prodes: false, deter: false, queimadas: false,
+    uc: false, ti: false, assentamento: false, quilombola: false,
+  });
+  const layerLoadingRef = useRef<Record<LayerId, boolean>>({
+    prodes: false, deter: false, queimadas: false,
+    uc: false, ti: false, assentamento: false, quilombola: false,
+  });
 
   // Toast helpers
   const dismissToast = useCallback((id: number) => {
@@ -187,11 +285,18 @@ export default function App() {
         if (!active) return;
         if (p['sicarSpDisponivel'] === true) {
           setDbStatus('available');
-          setDbMessage(`Banco com ${String(p['total_sp'] ?? p['total'] ?? '?')} propriedades SP.`);
+          setDbMessage(`SICAR: ${String(p['total_sp'] ?? p['total'] ?? '?')} propriedades SP.`);
         } else {
           setDbStatus('unavailable');
           setDbMessage('Sem cache SP — busca ingere sob demanda.');
         }
+        if (typeof p['total_prodes'] === 'number') setInpeProdesCount(p['total_prodes']);
+        if (typeof p['total_deter'] === 'number') setInpeDeterCount(p['total_deter']);
+        if (typeof p['total_focos'] === 'number') setInpeFocosCount(p['total_focos']);
+        if (typeof p['total_uc'] === 'number') setUcCount(p['total_uc']);
+        if (typeof p['total_ti'] === 'number') setTiCount(p['total_ti']);
+        if (typeof p['total_assentamento'] === 'number') setAssentamentoCount(p['total_assentamento']);
+        if (typeof p['total_quilombola'] === 'number') setQuilombolaCount(p['total_quilombola']);
       })
       .catch(() => {
         if (!active) return;
@@ -224,10 +329,17 @@ export default function App() {
     tileLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap'
     }).addTo(map);
+    prodesLayerRef.current = L.layerGroup().addTo(map);
+    deterLayerRef.current = L.layerGroup().addTo(map);
+    focosLayerRef.current = L.layerGroup().addTo(map);
+    ucLayerRef.current = L.layerGroup().addTo(map);
+    tiLayerRef.current = L.layerGroup().addTo(map);
+    assentamentoLayerRef.current = L.layerGroup().addTo(map);
+    quilombolaLayerRef.current = L.layerGroup().addTo(map);
     neighborsLayerRef.current = L.layerGroup().addTo(map);
     resultLayerRef.current = L.layerGroup().addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
-    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; };
+    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; ucLayerRef.current = null; tiLayerRef.current = null; assentamentoLayerRef.current = null; quilombolaLayerRef.current = null; };
   }, []);
 
   // Tile ao mudar tema
@@ -241,6 +353,206 @@ export default function App() {
     tileLayerRef.current = next;
   }, [theme]);
 
+  // Carrega overlays INPE usando queries espaciais (ST_Intersects / ST_DWithin)
+  const carregarInpe = useCallback(async (codImovel: string) => {
+    prodesLayerRef.current?.clearLayers();
+    deterLayerRef.current?.clearLayers();
+    focosLayerRef.current?.clearLayers();
+    setInpeStats(null);
+
+    // PRODES — ST_Intersects com a propriedade (laranja)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/desmatamento-prodes/por-propriedade/${encodeURIComponent(codImovel)}`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = prodesLayerRef.current;
+        if (!layer) return;
+        let totalHa = 0;
+        for (const p of list) {
+          if (!p.geometria) continue;
+          totalHa += ((p['area_km2'] as number) ?? 0) * 100;
+          L.geoJSON(p.geometria as GeoJSON.Geometry, {
+            style: { color: '#d97706', weight: 1.5, fillColor: '#fbbf24', fillOpacity: 0.35 }
+          }).bindTooltip(
+            `PRODES ${p['ano'] ?? ''} · ${p['area_km2'] != null ? `${(p['area_km2'] as number).toFixed(2)} km²` : ''}`,
+            { sticky: true, opacity: 0.9 }
+          ).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), prodes: list.length, prodes_area_ha: Math.round(totalHa) }));
+        if (list.length > 0) addToast('warning', `PRODES: ${list.length} polígono(s) na propriedade`, `~${Math.round(totalHa)} ha desmatados`);
+      } catch { /* silently ignore */ }
+    })();
+
+    // DETER — ST_Intersects com a propriedade (vermelho)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/alerta-deter/por-propriedade/${encodeURIComponent(codImovel)}`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = deterLayerRef.current;
+        if (!layer) return;
+        for (const d of list) {
+          if (!d.geometria) continue;
+          L.geoJSON(d.geometria as GeoJSON.Geometry, {
+            style: { color: '#dc2626', weight: 1.5, fillColor: '#f87171', fillOpacity: 0.4 }
+          }).bindTooltip(`DETER · ${d['classname'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), deter: list.length }));
+        if (list.length > 0) addToast('error', `DETER: ${list.length} alerta(s) na propriedade`, 'Sobreposição direta detectada');
+      } catch { /* silently ignore */ }
+    })();
+
+    // Focos — ST_DWithin 10 km da propriedade (amarelo)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/foco-queimada/por-propriedade/${encodeURIComponent(codImovel)}?buffer_m=10000`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = focosLayerRef.current;
+        if (!layer) return;
+        for (const f of list) {
+          const lat = f['latitude'] as number | undefined;
+          const lon = f['longitude'] as number | undefined;
+          if (lat == null || lon == null) continue;
+          L.circleMarker([lat, lon], {
+            radius: 4, color: '#92400e', weight: 1,
+            fillColor: '#f59e0b', fillOpacity: 0.75
+          }).bindTooltip(
+            `Foco · ${f['satelite'] ?? ''} · ${f['data_hora_gmt'] ? new Date(f['data_hora_gmt'] as string).toLocaleDateString('pt-BR') : ''}`,
+            { sticky: true, opacity: 0.9 }
+          ).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), focos: list.length }));
+        if (list.length > 0) addToast('warning', `Queimadas: ${list.length} foco(s) (raio 10 km)`, 'Detectados 2016–2025');
+      } catch { /* silently ignore */ }
+    })();
+  }, [addToast]);
+
+  const toggleCamada = useCallback(async (id: LayerId) => {
+    const isOn = !layerVisible[id];
+    setLayerVisible(prev => ({ ...prev, [id]: isOn }));
+
+    const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
+      prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
+      uc: ucLayerRef, ti: tiLayerRef, assentamento: assentamentoLayerRef, quilombola: quilombolaLayerRef,
+    };
+    const layer = layerMap[id].current;
+    if (!layer) return;
+
+    if (!isOn) { layer.clearLayers(); return; }
+    if (layerLoadingRef.current[id]) return;
+    layerLoadingRef.current[id] = true;
+    layer.clearLayers();
+
+    const configs: Record<LayerId, { url: string; render: (f: InpeFeature, layer: L.LayerGroup) => void }> = {
+      prodes: {
+        url: '/gerenciamento_banco/banco/desmatamento-prodes?uf=SP&limit=1000',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#d97706', weight: 1, fillColor: '#fbbf24', fillOpacity: 0.3 }
+          }).bindTooltip(`PRODES ${f['ano'] ?? ''} · ${f['area_km2'] != null ? `${(f['area_km2'] as number).toFixed(2)} km²` : ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      deter: {
+        url: '/gerenciamento_banco/banco/alerta-deter?uf=SP&limit=1000',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#dc2626', weight: 1, fillColor: '#f87171', fillOpacity: 0.35 }
+          }).bindTooltip(`DETER · ${f['classname'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      queimadas: {
+        url: '/gerenciamento_banco/banco/foco-queimada?estado=SP&limit=2000',
+        render: (f, l) => {
+          const lat = f['latitude'] as number | undefined;
+          const lon = f['longitude'] as number | undefined;
+          if (lat == null || lon == null) return;
+          L.circleMarker([lat, lon], { radius: 3, color: '#92400e', weight: 1, fillColor: '#f59e0b', fillOpacity: 0.7 })
+            .bindTooltip(`Foco · ${f['satelite'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      uc: {
+        url: '/gerenciamento_banco/banco/unidade-conservacao?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#059669', weight: 1.5, fillColor: '#34d399', fillOpacity: 0.3 }
+          }).bindTooltip(`UC: ${f['nome'] ?? f['cod_uc'] ?? ''} · ${f['categoria'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      ti: {
+        url: '/gerenciamento_banco/banco/terra-indigena?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#7c3aed', weight: 1.5, fillColor: '#a78bfa', fillOpacity: 0.35 }
+          }).bindTooltip(`TI: ${f['nome'] ?? f['cod_ti'] ?? ''} · ${f['etnia'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      assentamento: {
+        url: '/gerenciamento_banco/banco/assentamento?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#b45309', weight: 1.5, fillColor: '#fcd34d', fillOpacity: 0.3 }
+          }).bindTooltip(`Assentamento: ${f['nome'] ?? f['cod_sipra'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      quilombola: {
+        url: '/gerenciamento_banco/banco/quilombola?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#be185d', weight: 1.5, fillColor: '#f472b6', fillOpacity: 0.3 }
+          }).bindTooltip(`Quilombola: ${f['nome'] ?? f['cod_quilombola'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+    };
+
+    try {
+      const r = await fetch(configs[id].url);
+      if (!r.ok) return;
+      const list = await r.json() as InpeFeature[];
+      for (const f of list) configs[id].render(f, layer);
+    } catch { /* silently ignore */ } finally {
+      layerLoadingRef.current[id] = false;
+    }
+  }, [layerVisible]);
+
+  const carregarAreasProtegidas = useCallback(async (codImovel: string) => {
+    setAreasProtegidasStats(null);
+    const base = `/gerenciamento_banco/banco`;
+    const endpoints: [keyof AreasProtegidasStats, string][] = [
+      ['uc', 'unidade-conservacao'],
+      ['ti', 'terra-indigena'],
+      ['assentamento', 'assentamento'],
+      ['quilombola', 'quilombola'],
+    ];
+    const result: AreasProtegidasStats = { uc: [], ti: [], assentamento: [], quilombola: [] };
+    await Promise.all(
+      endpoints.map(async ([chave, path]) => {
+        try {
+          const r = await fetch(`${base}/${path}/por-propriedade/${encodeURIComponent(codImovel)}`);
+          if (r.ok) result[chave] = await r.json();
+        } catch { /* silently ignore */ }
+      })
+    );
+    setAreasProtegidasStats(result);
+    const n_ti = result.ti.length;
+    const n_uc = result.uc.length;
+    if (n_ti > 0) addToast('error', `Terra Indígena: ${n_ti} sobreposição(ões)`, result.ti.map(t => t.nome ?? t.cod_ti).join(', '));
+    if (n_uc > 0) addToast('warning', `UC: ${n_uc} sobreposição(ões)`, result.uc.map(u => u.nome ?? u.cod_uc).join(', '));
+  }, [addToast]);
+
   // Busca
   const handleSearch = async () => {
     const query = searchValue.trim();
@@ -250,8 +562,14 @@ export default function App() {
 
     resultLayer.clearLayers();
     neighborsLayerRef.current?.clearLayers();
+    prodesLayerRef.current?.clearLayers();
+    deterLayerRef.current?.clearLayers();
+    focosLayerRef.current?.clearLayers();
     setPropriedade(null);
     setAnaliseASG(null);
+    setRelatorioASG(null);
+    setInpeStats(null);
+    setAreasProtegidasStats(null);
     if (!query) return;
 
     // Coordenadas
@@ -305,7 +623,11 @@ export default function App() {
         addToast('success', 'Propriedade encontrada',
           `${prop.municipio ?? ''}${prop.uf ? `/${prop.uf}` : ''}${prop.area ? ` · ${prop.area.toFixed(1)} ha` : ''}`);
 
-        // Load neighbors in the same municipality (background layer)
+        // Dados INPE espacialmente sobrepostos à propriedade (ST_Intersects / ST_DWithin)
+        void carregarInpe(prop.cod_imovel);
+        void carregarAreasProtegidas(prop.cod_imovel);
+
+        // Propriedades vizinhas (background layer)
         if (prop.municipio && prop.uf) {
           void (async () => {
             try {
@@ -332,14 +654,19 @@ export default function App() {
         addToast('warning', 'Propriedade sem geometria', 'Dados cadastrais encontrados, mas sem polígono no banco.');
       }
 
-      // Análise ASG
-      try {
-        const asgResp = await fetch(`/cruzamento_asg/asg/analises/${encodeURIComponent(cod)}`);
-        if (asgResp.ok) {
-          setAnaliseASG(await asgResp.json() as AnaliseASG);
-          addToast('success', 'Análise ASG carregada');
-        }
-      } catch { /* sem ASG, não é crítico */ }
+      // Análise ASG (legado) + Relatório ASG (novo)
+      void (async () => {
+        try {
+          const asgResp = await fetch(`/cruzamento_asg/asg/analises/${encodeURIComponent(cod)}`);
+          if (asgResp.ok) setAnaliseASG(await asgResp.json() as AnaliseASG);
+        } catch { /* não crítico */ }
+      })();
+      void (async () => {
+        try {
+          const relResp = await fetch(`/cruzamento_asg/asg/relatorio/${encodeURIComponent(cod)}`);
+          if (relResp.ok) setRelatorioASG(await relResp.json() as RelatorioASG);
+        } catch { /* não crítico */ }
+      })();
 
     } catch (err) {
       addToast('error', 'Erro de rede', err instanceof Error ? err.message : 'Erro desconhecido');
@@ -370,13 +697,115 @@ export default function App() {
   };
 
   const asgRows = analiseASG ? [
-    { eixo: 'Ambiental', indicador: 'APP',   valor: analiseASG.deficit_app_ha            != null ? `${analiseASG.deficit_app_ha} ha`            : '—' },
-    { eixo: 'Ambiental', indicador: 'RL',    valor: analiseASG.deficit_reserva_legal_ha  != null ? `${analiseASG.deficit_reserva_legal_ha} ha`  : '—' },
-    { eixo: 'Ambiental', indicador: 'DETER', valor: analiseASG.area_desmatada_ha         != null ? `${analiseASG.area_desmatada_ha} ha`         : '—' },
-    { eixo: 'Social',    indicador: 'UCs',   valor: analiseASG.sobreposicao_uc  ?? '—' },
-    { eixo: 'Social',    indicador: 'TI',    valor: analiseASG.sobreposicao_ti  ?? '—' },
-    { eixo: 'Governança',indicador: 'CAR',   valor: propriedade?.status_imovel  ?? '—' },
+    { eixo: 'Ambiental', indicador: 'Desmat. PRODES', valor: analiseASG.area_desmatada_ha != null ? `${analiseASG.area_desmatada_ha} ha` : '—' },
+    { eixo: 'Ambiental', indicador: 'Déficit APP',    valor: analiseASG.deficit_app_ha != null ? `${analiseASG.deficit_app_ha} ha` : '—' },
+    { eixo: 'Ambiental', indicador: 'Déficit RL',     valor: analiseASG.deficit_reserva_legal_ha != null ? `${analiseASG.deficit_reserva_legal_ha} ha` : '—' },
+    { eixo: 'Social',    indicador: 'UCs',            valor: analiseASG.sobreposicao_uc ?? '—' },
+    { eixo: 'Social',    indicador: 'TI',             valor: analiseASG.sobreposicao_ti ?? '—' },
+    { eixo: 'Governança', indicador: 'CAR',           valor: propriedade?.status_imovel ?? '—' },
   ] : [];
+
+// ── Login ──
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authUser, password: authPass })
+      });
+
+      if (!res.ok) throw new Error('Usuário ou senha inválidos');
+      
+      const data = await res.json() as { token: string };
+      setAuthToken(data.token);
+      setIsLoggedIn(true);
+      setAuthUser('');
+      setAuthPass('');
+      addToast('success', 'Acesso liberado', 'Bem-vindo ao painel de administração.');
+    } catch (err) {
+      addToast('error', 'Acesso negado', err instanceof Error ? err.message : 'Erro ao conectar.');
+    }
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setAuthToken(null);
+    setIsModalOpen(false);
+  };
+
+  // ── Modal Admin ──
+  useEffect(() => {
+    if (!isModalOpen || !authToken) return;
+
+    setFontesAdmin(FONTES_INICIAIS);
+    
+    FONTES_INICIAIS.forEach(async (fonte) => {
+      try {
+        const res = await fetch(`/admin/verificar-atualizacao/${fonte.id}`, {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        
+        if (!res.ok) throw new Error('Falha na verificação');
+        const data = await res.json() as { ha_novos_dados: boolean; total_local: number };
+        
+        setFontesAdmin((prev) => prev.map((f) => 
+          f.id === fonte.id ? { 
+            ...f, 
+            status: data.ha_novos_dados ? 'update-available' : 'up-to-date',
+            total_registros: data.total_local
+          } : f
+        ));
+      } catch {
+        setFontesAdmin((prev) => prev.map((f) => f.id === fonte.id ? { ...f, status: 'error' } : f));
+      }
+    });
+  }, [isModalOpen, authToken]);
+
+  const startUpdate = async (fonteId: FonteId) => {
+    if (!authToken) return;
+    setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'updating', progresso: 0 } : f));
+    
+    try {
+      const resStart = await fetch(`/admin/atualizar/${fonteId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (!resStart.ok) throw new Error('Falha ao iniciar ingestão');
+      const poll = async () => {
+        try {
+          const res = await fetch('/admin/status', {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+          });
+          
+          if (!res.ok) throw new Error('Erro no polling');
+          const statusDict = await res.json() as Record<string, any>;
+          const fonteStatus = statusDict[fonteId]; 
+          const progresso = fonteStatus?.progresso ?? 0;
+          const statusAtual = fonteStatus?.status;
+
+          setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, progresso: progresso } : f));
+
+          if (statusAtual === 'concluido') {
+            setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'up-to-date', progresso: 100 } : f));
+            addToast('success', 'Atualização Concluída', `A fonte ${fonteId.toUpperCase()} foi atualizada com sucesso.`);
+          } else if (statusAtual === 'erro' || statusAtual === 'Indisponível') {
+            setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'error' } : f));
+            addToast('error', 'Erro na Ingestão', `Falha ao atualizar ${fonteId.toUpperCase()}.`);
+          } else {
+            setTimeout(poll, 3000);
+          }
+        } catch {
+          setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'error' } : f));
+        }
+      };
+      setTimeout(poll, 3000);
+
+    } catch (err) {
+      setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'error' } : f));
+      addToast('error', 'Erro', 'Não foi possível iniciar a atualização.');
+    }
+  };
 
   return (
     <>
@@ -389,28 +818,62 @@ export default function App() {
             <span className="brand-title">Stratos</span>
           </div>
 
-          <div className="topbar-actions" ref={menuRef}>
-            <button type="button" className="theme-gear" onClick={() => setIsThemeMenuOpen((s) => !s)} aria-label="Tema">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.63l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
-              </svg>
-            </button>
-            {isThemeMenuOpen && (
-              <div className="theme-popup" role="dialog">
-                <div className="theme-switch-row">
-                  <button type="button" role="switch" aria-checked={theme === 'dark'}
-                    className={`theme-switch ${theme === 'dark' ? 'is-dark' : ''}`}
-                    onClick={() => setTheme((t) => t === 'light' ? 'dark' : 'light')}>
-                    <span className="theme-switch-icon" aria-hidden="true">
-                      {theme === 'dark'
-                        ? <svg viewBox="0 0 24 24"><path d="M12.1 2.2a1 1 0 0 0-1.1 1.2 8 8 0 0 1-8.4 9.8 1 1 0 0 0-.8 1.6A10 10 0 1 0 12.1 2.2Z" /></svg>
-                        : <svg viewBox="0 0 24 24"><path d="M12 4.2a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0V5.2a1 1 0 0 1 1-1Zm0 12.5a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0v-1.1a1 1 0 0 1 1-1Zm7.8-5.7a1 1 0 0 1 1 1 1 1 0 0 1-1 1h-1.1a1 1 0 1 1 0-2h1.1ZM6.3 11a1 1 0 1 1 0 2H5.2a1 1 0 1 1 0-2h1.1Zm9.3-4.9a1 1 0 0 1 1.4 0l.8.8a1 1 0 1 1-1.4 1.4l-.8-.8a1 1 0 0 1 0-1.4ZM7.2 14.6a1 1 0 0 1 1.4 0 1 1 0 0 1 0 1.4l-.8.8a1 1 0 0 1-1.4-1.4l.8-.8Zm9.2 2a1 1 0 0 1-1.4 0l-.8-.8a1 1 0 1 1 1.4-1.4l.8.8a1 1 0 0 1 0 1.4ZM8.6 8.2a1 1 0 1 1-1.4-1.4l.8-.8A1 1 0 1 1 9.4 7.4l-.8.8ZM12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6Z" /></svg>}
-                    </span>
-                    <span className="theme-switch-thumb" />
-                  </button>
-                </div>
+          <div className="topbar-right">
+            {isLoggedIn ? (
+              <div className="topbar-auth">
+                <button type="button" className="auth-button" onClick={() => setIsModalOpen(true)}>
+                  Atualizar Dados
+                </button>
+                <button type="button" className="auth-button" style={{ background: 'transparent', border: '2px solid var(--control-line)', color: 'var(--control-line)' }} onClick={handleLogout}>
+                  Sair
+                </button>
               </div>
+            ) : (
+              <form className="topbar-auth" onSubmit={handleLogin}>
+                <input 
+                  type="text" 
+                  placeholder="Usuário" 
+                  className="auth-input" 
+                  value={authUser}
+                  onChange={(e) => setAuthUser(e.target.value)}
+                />
+                <input 
+                  type="password" 
+                  placeholder="Senha" 
+                  className="auth-input" 
+                  value={authPass}
+                  onChange={(e) => setAuthPass(e.target.value)}
+                />
+                <button type="submit" className="auth-button">
+                  Entrar
+                </button>
+              </form>
             )}
+
+            {/* ── Menu de Tema ── */}
+            <div className="topbar-actions" ref={menuRef}>
+              <button type="button" className="theme-gear" onClick={() => setIsThemeMenuOpen((s) => !s)} aria-label="Tema">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.63l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
+                </svg>
+              </button>
+              {isThemeMenuOpen && (
+                <div className="theme-popup" role="dialog">
+                  <div className="theme-switch-row">
+                    <button type="button" role="switch" aria-checked={theme === 'dark'}
+                      className={`theme-switch ${theme === 'dark' ? 'is-dark' : ''}`}
+                      onClick={() => setTheme((t) => t === 'light' ? 'dark' : 'light')}>
+                      <span className="theme-switch-icon" aria-hidden="true">
+                        {theme === 'dark'
+                          ? <svg viewBox="0 0 24 24"><path d="M12.1 2.2a1 1 0 0 0-1.1 1.2 8 8 0 0 1-8.4 9.8 1 1 0 0 0-.8 1.6A10 10 0 1 0 12.1 2.2Z" /></svg>
+                          : <svg viewBox="0 0 24 24"><path d="M12 4.2a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0V5.2a1 1 0 0 1 1-1Zm0 12.5a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0v-1.1a1 1 0 0 1 1-1Zm7.8-5.7a1 1 0 0 1 1 1 1 1 0 0 1-1 1h-1.1a1 1 0 1 1 0-2h1.1ZM6.3 11a1 1 0 1 1 0 2H5.2a1 1 0 1 1 0-2h1.1Zm9.3-4.9a1 1 0 0 1 1.4 0l.8.8a1 1 0 1 1-1.4 1.4l-.8-.8a1 1 0 0 1 0-1.4ZM7.2 14.6a1 1 0 0 1 1.4 0 1 1 0 0 1 0 1.4l-.8.8a1 1 0 0 1-1.4-1.4l.8-.8Zm9.2 2a1 1 0 0 1-1.4 0l-.8-.8a1 1 0 1 1 1.4-1.4l.8.8a1 1 0 0 1 0 1.4ZM8.6 8.2a1 1 0 1 1-1.4-1.4l.8-.8A1 1 0 1 1 9.4 7.4l-.8.8ZM12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6Z" /></svg>}
+                      </span>
+                      <span className="theme-switch-thumb" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -420,15 +883,9 @@ export default function App() {
             <section className="left-status-panel">
               <h3 className="left-status-title">Status de dados</h3>
 
-              <div className="data-status-row" aria-live="polite">
-                <div className="data-status-header">
-                  <span className={`data-status-dot is-${dbStatus}`} />
-                  <strong className="data-status-label">
-                    SICAR-SP: {dbStatus === 'available' ? 'Disponível' : dbStatus === 'checking' ? 'Verificando...' : 'Sem cache'}
-                  </strong>
-                </div>
-                <span className="data-status-message">{dbMessage}</span>
-              </div>
+              {!propriedade && (
+                <p className="left-status-empty">Busque um imóvel pelo código CAR para visualizar os dados da propriedade.</p>
+              )}
 
               {propriedade && (
                 <div className="data-status-row">
@@ -445,6 +902,53 @@ export default function App() {
                   {propriedade.cod_municipio_ibge && <span className="data-status-message">IBGE: {propriedade.cod_municipio_ibge}</span>}
                   {propriedade.m_fiscal && <span className="data-status-message">Módulo fiscal: {propriedade.m_fiscal}</span>}
                   {propriedade.dat_criacao && <span className="data-status-message">Criado: {new Date(propriedade.dat_criacao).toLocaleDateString('pt-BR')}</span>}
+                </div>
+              )}
+
+              {inpeStats && (
+                <div className="data-status-row">
+                  <div className="data-status-header">
+                    <span className="data-status-dot" style={{ background: '#d97706' }} />
+                    <strong className="data-status-label">Sobreposição INPE na propriedade</strong>
+                  </div>
+                  <span className="data-status-message" style={{ color: '#d97706' }}>
+                    PRODES: {inpeStats.prodes} polígono(s) · {inpeStats.prodes_area_ha} ha
+                  </span>
+                  <span className="data-status-message" style={{ color: '#dc2626' }}>
+                    DETER: {inpeStats.deter} alerta(s) sobrepostos
+                  </span>
+                  <span className="data-status-message" style={{ color: '#f59e0b' }}>
+                    Queimadas: {inpeStats.focos} foco(s) dentro da propriedade
+                  </span>
+                </div>
+              )}
+
+              {areasProtegidasStats && (
+                <div className="data-status-row">
+                  <div className="data-status-header">
+                    <span className="data-status-dot" style={{ background: '#7c3aed' }} />
+                    <strong className="data-status-label">Áreas Protegidas na propriedade</strong>
+                  </div>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.uc.length > 0 ? '#dc2626' : undefined }}>
+                    UC: {areasProtegidasStats.uc.length > 0
+                      ? areasProtegidasStats.uc.map(u => u.nome ?? u.cod_uc).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.ti.length > 0 ? '#dc2626' : undefined }}>
+                    TI: {areasProtegidasStats.ti.length > 0
+                      ? areasProtegidasStats.ti.map(t => t.nome ?? t.cod_ti).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.assentamento.length > 0 ? '#d97706' : undefined }}>
+                    Assentamento: {areasProtegidasStats.assentamento.length > 0
+                      ? areasProtegidasStats.assentamento.map(a => a.nome ?? a.cod_sipra).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.quilombola.length > 0 ? '#d97706' : undefined }}>
+                    Quilombola: {areasProtegidasStats.quilombola.length > 0
+                      ? areasProtegidasStats.quilombola.map(q => q.nome ?? q.cod_quilombola).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
                 </div>
               )}
             </section>
@@ -464,6 +968,42 @@ export default function App() {
               </button>
             </div>
 
+            <div className="layer-toolbar">
+              {([
+                { id: 'prodes',       label: 'PRODES',        color: '#d97706', count: inpeProdesCount,    unit: 'pol.' },
+                { id: 'deter',        label: 'DETER',         color: '#dc2626', count: inpeDeterCount,     unit: 'alertas' },
+                { id: 'queimadas',    label: 'Queimadas',     color: '#f59e0b', count: inpeFocosCount,     unit: 'focos' },
+                { id: 'uc',           label: 'UC',            color: '#059669', count: ucCount,            unit: 'UCs' },
+                { id: 'ti',           label: 'TI',            color: '#7c3aed', count: tiCount,            unit: 'TIs' },
+                { id: 'assentamento', label: 'Assentamentos', color: '#b45309', count: assentamentoCount,  unit: 'ass.' },
+                { id: 'quilombola',   label: 'Quilombolas',   color: '#be185d', count: quilombolaCount,    unit: 'terr.' },
+              ] as { id: LayerId; label: string; color: string; count: number | null; unit: string }[]).map(({ id, label, color, count, unit }) => {
+                const on = layerVisible[id];
+                const dotClass = count === null ? 'is-checking' : count > 0 ? 'is-available' : 'is-unavailable';
+                return (
+                  <button
+                    key={id}
+                    className={`layer-btn${on ? ' layer-btn--on' : ''}`}
+                    style={on ? { borderColor: color, color } : undefined}
+                    onClick={() => void toggleCamada(id)}
+                    title={on ? `Ocultar ${label}` : `Exibir ${label}`}
+                  >
+                    <span className="layer-btn-eye">
+                      {on
+                        ? <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        : <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                      }
+                    </span>
+                    <span className={`data-status-dot layer-btn-dot ${dotClass}`} />
+                    <span className="layer-btn-label">{label}</span>
+                    {count !== null && count > 0 && (
+                      <span className="layer-btn-count">{count.toLocaleString('pt-BR')} {unit}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="map-stage">
               <div ref={mapContainerRef} id="map-root" className="shell-map" />
             </div>
@@ -481,16 +1021,58 @@ export default function App() {
                   {propriedade?.status_imovel && (
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
-                  <div className="unavailable-panel">
-                    <span className="unavailable-panel-icon">
-                      <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
-                    </span>
-                    <div>
-                      <strong>Análise ASG indisponível</strong>
-                      <p>O módulo de cruzamento ambiental, social e de governança ainda está em desenvolvimento.</p>
+
+                  {relatorioASG ? (
+                    <div className="asg-indicadores">
+                      {(['Ambiental', 'Social', 'Governança'] as const).map((cat) => {
+                        const itens = relatorioASG.indicadores.filter(i => i.categoria === cat);
+                        if (!itens.length) return null;
+                        return (
+                          <div key={cat} className="asg-categoria-group">
+                            <span className="asg-categoria-label">{cat}</span>
+                            {itens.map((ind, idx) => (
+                              <div key={idx} className="asg-indicador-row">
+                                <div className="asg-indicador-main">
+                                  <span className="asg-indicador-nome">{ind.nome}</span>
+                                  <span className={`asg-status-badge asg-status-${ind.status}`}>
+                                    {ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente'}
+                                  </span>
+                                </div>
+                                <div className="asg-indicador-valor">
+                                  {ind.valor != null
+                                    ? <strong>{ind.valor.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} {ind.unidade}</strong>
+                                    : ind.detalhe
+                                      ? <strong>{ind.detalhe}</strong>
+                                      : <span>—</span>
+                                  }
+                                  {ind.valor != null && ind.detalhe && (
+                                    <span className="asg-indicador-detalhe">{ind.detalhe}</span>
+                                  )}
+                                </div>
+                                <div className="asg-indicador-meta">
+                                  {ind.fonte} · {ind.data_referencia}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
                     </div>
-                    <button className="unavailable-btn" disabled>Em breve</button>
-                  </div>
+                  ) : propriedade ? (
+                    <div className="asg-loading-panel">
+                      <span className="asg-loading-text">Carregando indicadores ASG...</span>
+                    </div>
+                  ) : (
+                    <div className="unavailable-panel">
+                      <span className="unavailable-panel-icon">
+                        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
+                      </span>
+                      <div>
+                        <strong>Relatório ASG</strong>
+                        <p>Busque um imóvel pelo código CAR para visualizar os indicadores ASG.</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
 
@@ -500,25 +1082,82 @@ export default function App() {
                   {propriedade && <span>{propriedade.cod_imovel}</span>}
                 </header>
                 <div className="chat-placeholder-body">
-                  <div className="unavailable-panel">
-                    <span className="unavailable-panel-icon">
-                      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    </span>
-                    <div>
-                      <strong>Chatbot indisponível</strong>
-                      <p>O assistente de linguagem natural para consultas ASG ainda está em desenvolvimento.</p>
+                  {chatMessages.map((m) => (
+                    <div key={m.id} className={`chat-msg chat-msg-${m.role}`}>
+                      <span>{m.text}</span>
                     </div>
-                    <button className="unavailable-btn" disabled>Em breve</button>
-                  </div>
+                  ))}
                 </div>
-                <footer className="chat-placeholder-footer is-disabled">
-                  <input type="text" placeholder="Indisponível no momento..." disabled />
-                  <button type="button" disabled>Enviar</button>
+                <footer className="chat-placeholder-footer">
+                  <input
+                    type="text"
+                    placeholder={propriedade ? 'Pergunte sobre esta propriedade...' : 'Busque um CAR primeiro...'}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
+                    disabled={!propriedade}
+                  />
+                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim()}>
+                    Enviar
+                  </button>
                 </footer>
               </section>
             </div>
           </aside>
         </section>
+        {isModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
+          <div className="modal-shell shell" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h3>Gerenciamento de Ingestão e Dados</h3>
+              <button className="modal-close" onClick={() => setIsModalOpen(false)}>
+                <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" strokeWidth="2" stroke="currentColor" strokeLinecap="round" /></svg>
+              </button>
+            </header>
+            
+            <div className="modal-body">
+              {fontesAdmin.map((fonte) => (
+                <div key={fonte.id} className="admin-fonte-row">
+                  <div className="admin-fonte-left">
+                    <strong className="admin-fonte-nome">{fonte.nome}</strong>
+                    <div className="admin-fonte-meta">
+                      {fonte.ultima_atualizacao && <span>Última: {fonte.ultima_atualizacao}</span>}
+                      {fonte.total_registros != null && <span>Registros: {fonte.total_registros.toLocaleString('pt-BR')}</span>}
+                    </div>
+                  </div>
+                    <div className="admin-fonte-right">
+                    <div className="admin-fonte-status">
+                      {fonte.status === 'checking' && <span className="admin-badge badge-checking">Verificando...</span>}
+                      {fonte.status === 'up-to-date' && <span className="admin-badge badge-ok">Em dia</span>}
+                      {fonte.status === 'update-available' && <span className="admin-badge badge-new">Nova Atualização</span>}
+                      {fonte.status === 'updating' && <span className="admin-badge badge-updating">Atualizando...</span>}
+                      {fonte.status === 'error' && <span className="admin-badge badge-error">Erro de conexão</span>}
+                    </div>
+
+                    <button 
+                      className="auth-button" 
+                      disabled={fonte.status !== 'update-available'}
+                      onClick={() => void startUpdate(fonte.id)}
+                      style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+                    >
+                      {fonte.status === 'updating' ? 'Ingerindo...' : 'Atualizar'}
+                    </button>
+
+                    {fonte.status === 'updating' && (
+                      <div className="admin-progress-bar">
+                        <div className="admin-progress-fill" style={{ width: `${fonte.progresso ?? 0}%` }} />
+                      </div>
+                    )}
+                  </div>
+
+
+
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       </main>
     </>
   );
