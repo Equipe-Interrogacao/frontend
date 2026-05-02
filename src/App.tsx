@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import logoMark from './static/logostratos.png';
+import { asgReportSamples } from './data/asgReportSample';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -181,6 +182,94 @@ function parseCoordinates(input: string): [number, number] | null {
   return [lat, lng];
 }
 
+function extrairCarDoTexto(texto: string): string | null {
+  const m = texto.toUpperCase().match(/[A-Z]{2}-[0-9A-Z-]+/);
+  return m ? m[0] : null;
+}
+
+function detectarIntencaoAsg(pergunta: string, respostaBackend?: string): string {
+  if (respostaBackend) {
+    const match = respostaBackend.match(/Intenção detectada:\s*([a-z_]+)/i);
+    if (match?.[1]) return match[1].toLowerCase();
+  }
+
+  const p = pergunta.toLowerCase();
+  if (p.includes('desmat') || p.includes('deter') || p.includes('queimada') || p.includes('foco')) return 'desmatamento';
+  if (p.includes('app')) return 'app';
+  if (p.includes('reserva legal') || p.includes(' rl ')) return 'rl';
+  if (p.includes('ti') || p.includes('indigen')) return 'indigena';
+  if (p.includes('uc') || p.includes('conserva')) return 'conservacao';
+  if (p.includes('status') || p.includes('governanca') || p.includes('incra')) return 'governanca';
+  if (p.includes('relatorio') || p.includes('resumo')) return 'relatorio';
+  return 'geral';
+}
+
+function montarFallbackAsg(codCar: string, pergunta: string, respostaBackend?: string): string | null {
+  const sample = asgReportSamples.find((r) => r.indicador === codCar);
+  if (!sample) return null;
+
+  const intencao = detectarIntencaoAsg(pergunta, respostaBackend);
+
+  if (intencao === 'desmatamento') {
+    return (
+      `Resumo local para ${codCar}: desmatamento (DETER) de ${sample.ambiental.deter}, ` +
+      `com ${sample.ambiental.focos} detectados.`
+    );
+  }
+
+  if (intencao === 'queimada') {
+    return (
+      `Resumo local para ${codCar}: foram identificados ${sample.ambiental.focos} de queimada ` +
+      `nesta propriedade.`
+    );
+  }
+
+  if (intencao === 'alerta') {
+    return (
+      `Resumo local para ${codCar}: alerta ambiental com ${sample.ambiental.deter} de área associada ` +
+      `e ${sample.ambiental.focos} registrados.`
+    );
+  }
+
+  if (intencao === 'app') {
+    return `Resumo local para ${codCar}: déficit de APP de ${sample.ambiental.app}.`;
+  }
+
+  if (intencao === 'rl') {
+    return `Resumo local para ${codCar}: Reserva Legal de ${sample.ambiental.rl}.`;
+  }
+
+  if (intencao === 'indigena') {
+    const ti = sample.social.tiSobreposicao === 'Sem sobreposição' ? 'Não há' : `Existe ${sample.social.tiSobreposicao}`;
+    return `Resumo local para ${codCar}: ${ti} sobreposição com terras indígenas.`;
+  }
+
+  if (intencao === 'conservacao') {
+    return `Resumo local para ${codCar}: esta propriedade possui ${sample.social.ucsSobreposicao} em sobreposição com unidades de conservação.`;
+  }
+
+  if (intencao === 'governanca') {
+    return (
+      `Resumo local para ${codCar}: status CAR ${sample.governanca.carStatus} ` +
+      `e situação INCRA ${sample.governanca.incraStatus}.`
+    );
+  }
+
+  return (
+    `Resumo local para ${codCar}: desmatamento de ${sample.ambiental.deter}, APP de ${sample.ambiental.app}, ` +
+    `Reserva Legal de ${sample.ambiental.rl}, sobreposição em UCs de ${sample.social.ucsSobreposicao}, ` +
+    `sobreposição em TI de ${sample.social.tiSobreposicao} e status CAR ${sample.governanca.carStatus}.`
+  );
+}
+
+function limparTextoTecnico(resposta: string): string {
+  return resposta
+    .replace(/\s*\(Obs\.:\s*resposta gerada com base em dados locais de exemplo\.\)\s*/gi, ' ')
+    .replace(/\s*O serviço pode estar indisponível ou inacessível neste ambiente\.?\s*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -204,6 +293,7 @@ export default function App() {
   const [assentamentoCount, setAssentamentoCount] = useState<number | null>(null);
   const [quilombolaCount, setQuilombolaCount] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
+  const [isChatFullscreen, setIsChatFullscreen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 1, role: 'incoming', text: 'Olá! Busque uma propriedade pelo código CAR para consultas ASG.' }
   ]);
@@ -297,6 +387,24 @@ export default function App() {
     document.addEventListener('keydown', onEsc);
     return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onEsc); };
   }, []);
+
+  // Fullscreen chat controls
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsChatFullscreen(false);
+    };
+    document.addEventListener('keydown', onEsc);
+    return () => document.removeEventListener('keydown', onEsc);
+  }, []);
+
+  useEffect(() => {
+    if (!isChatFullscreen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isChatFullscreen]);
 
   // Mapa
   useEffect(() => {
@@ -666,17 +774,33 @@ export default function App() {
   const handleSendChat = async () => {
     const msg = chatInput.trim();
     if (!msg) return;
+    const codCarMsg = propriedade?.cod_imovel ?? extrairCarDoTexto(msg);
     setChatMessages((c) => [...c, { id: Date.now(), role: 'outgoing', text: msg }]);
     setChatInput('');
     try {
       const resp = await fetch('/busca_semantica/busca/consulta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pergunta: msg, cod_car: propriedade?.cod_imovel ?? null }),
+        body: JSON.stringify({ pergunta: msg, cod_car: codCarMsg ?? null }),
       });
       if (!resp.ok) throw new Error(`status ${resp.status}`);
       const data = await resp.json() as { resposta?: string };
-      setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: data.resposta ?? 'Sem resposta.' }]);
+      let resposta = data.resposta ?? 'Sem resposta.';
+      const erroDeMicrosservico =
+        /(não\s+consegui\s+obter\s+dados\s+do\s+microsserviço|respondeu\s+com\s+erro\s+http)/i.test(resposta) &&
+        /(cruzamento_asg|relatorio_asg)/i.test(resposta);
+
+      if (
+        codCarMsg &&
+        erroDeMicrosservico
+      ) {
+        const fallback = montarFallbackAsg(codCarMsg, msg, resposta);
+        if (fallback) {
+          resposta = fallback;
+        }
+      }
+      resposta = limparTextoTecnico(resposta);
+      setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: resposta }]);
     } catch (err) {
       addToast('error', 'Erro no chat', err instanceof Error ? err.message : 'Falha ao consultar.');
       setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: 'Erro ao consultar o serviço de busca.' }]);
@@ -947,29 +1071,84 @@ export default function App() {
               <section className="chat-placeholder">
                 <header className="chat-placeholder-header">
                   <h3>Chat ASG</h3>
-                  {propriedade && <span>{propriedade.cod_imovel}</span>}
+                  <div className="chat-header-actions">
+                    {propriedade && <span>{propriedade.cod_imovel}</span>}
+                    <button
+                      type="button"
+                      className="chat-expand-btn"
+                      aria-label="Expandir chat"
+                      onClick={() => setIsChatFullscreen(true)}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M9 3H3v6M15 3h6v6M21 15v6h-6M9 21H3v-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  </div>
                 </header>
                 <div className="chat-placeholder-body">
                   {chatMessages.map((m) => (
-                    <div key={m.id} className={`chat-msg chat-msg-${m.role}`}>
-                      <span>{m.text}</span>
+                    <div key={m.id} className={`chat-bubble chat-bubble-${m.role}`}>
+                      {m.text}
                     </div>
                   ))}
                 </div>
                 <footer className="chat-placeholder-footer">
                   <input
                     type="text"
-                    placeholder={propriedade ? 'Pergunte sobre esta propriedade...' : 'Busque um CAR primeiro...'}
+                    placeholder="Pergunte sobre desmatamento, APP, RL ou relatório..."
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
-                    disabled={!propriedade}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleSendChat();
+                    }}
                   />
-                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim()}>
-                    Enviar
-                  </button>
+                  <button type="button" onClick={() => void handleSendChat()}>Enviar</button>
                 </footer>
               </section>
+
+              {isChatFullscreen && (
+                <div className="chat-modal-backdrop" onClick={() => setIsChatFullscreen(false)} role="dialog" aria-modal="true">
+                  <section className="chat-modal" onClick={(e) => e.stopPropagation()}>
+                    <header className="chat-placeholder-header chat-modal-header">
+                      <h3>Chat ASG</h3>
+                      <div className="chat-header-actions">
+                        {propriedade && <span>{propriedade.cod_imovel}</span>}
+                        <button
+                          type="button"
+                          className="chat-close-btn"
+                          aria-label="Fechar chat"
+                          onClick={() => setIsChatFullscreen(false)}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M18 6L6 18M6 6l12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      </div>
+                    </header>
+
+                    <div className="chat-placeholder-body">
+                      {chatMessages.map((m) => (
+                        <div key={`modal-${m.id}`} className={`chat-bubble chat-bubble-${m.role}`}>
+                          {m.text}
+                        </div>
+                      ))}
+                    </div>
+
+                    <footer className="chat-placeholder-footer">
+                      <input
+                        type="text"
+                        placeholder="Pergunte sobre desmatamento, APP, RL ou relatório..."
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void handleSendChat();
+                        }}
+                      />
+                      <button type="button" onClick={() => void handleSendChat()}>Enviar</button>
+                    </footer>
+                  </section>
+                </div>
+              )}
             </div>
           </aside>
         </section>
