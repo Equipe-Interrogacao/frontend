@@ -80,6 +80,9 @@ type ResumoASGConsolidado = {
   desmatamento_relativo?: number | null;
 };
 
+type AdminFonteStatus = { status: 'concluido' | 'updating' | 'erro'; progresso: number };
+type AdminFonteCheck = { id: string; fonte: string; total_local: number; total_remoto: number; ha_novos_dados: boolean };
+
 type InpeFeature = {
   id: number;
   geometria?: { type: string; coordinates: unknown };
@@ -210,6 +213,17 @@ export default function App() {
   ]);
   const chatBodyRef = useRef<HTMLDivElement>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // Admin panel state
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminUser, setAdminUser] = useState('');
+  const [adminPass, setAdminPass] = useState('');
+  const [adminLogging, setAdminLogging] = useState(false);
+  const [adminStatus, setAdminStatus] = useState<Record<string, AdminFonteStatus> | null>(null);
+  const [adminVerificacao, setAdminVerificacao] = useState<AdminFonteCheck[] | null>(null);
+  const [adminChecking, setAdminChecking] = useState(false);
+  const [adminUpdating, setAdminUpdating] = useState<Record<string, boolean>>({});
 
   const menuRef = useRef<HTMLDivElement>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -696,6 +710,70 @@ export default function App() {
     }
   };
 
+  // Admin handlers
+  const handleAdminLogin = async () => {
+    if (adminLogging) return;
+    setAdminLogging(true);
+    try {
+      const resp = await fetch('/gerenciamento_banco/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: adminUser, password: adminPass }),
+      });
+      if (!resp.ok) throw new Error('Usuário ou senha inválidos');
+      const data = await resp.json() as { token: string };
+      setAdminToken(data.token);
+      setAdminUser('');
+      setAdminPass('');
+      void handleAdminRefresh(data.token);
+    } catch (err) {
+      addToast('error', 'Falha no login admin', err instanceof Error ? err.message : 'Erro');
+    } finally {
+      setAdminLogging(false);
+    }
+  };
+
+  const handleAdminRefresh = async (token?: string) => {
+    const t = token ?? adminToken;
+    if (!t) return;
+    setAdminChecking(true);
+    try {
+      const headers = { Authorization: `Bearer ${t}` };
+      const [statusResp, checkResp] = await Promise.all([
+        fetch('/gerenciamento_banco/admin/status', { headers }),
+        fetch('/gerenciamento_banco/admin/verificar-tudo', { headers }),
+      ]);
+      if (statusResp.ok) setAdminStatus(await statusResp.json() as Record<string, AdminFonteStatus>);
+      if (checkResp.ok) setAdminVerificacao(await checkResp.json() as AdminFonteCheck[]);
+    } catch { /* silently ignore */ } finally {
+      setAdminChecking(false);
+    }
+  };
+
+  const handleAdminAtualizar = async (fonteId: string) => {
+    if (!adminToken || adminUpdating[fonteId]) return;
+    setAdminUpdating(prev => ({ ...prev, [fonteId]: true }));
+    try {
+      const resp = await fetch(`/gerenciamento_banco/admin/atualizar/${fonteId}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const data = await resp.json() as { message?: string; error?: string };
+      if (data.error) addToast('error', `Erro ao atualizar ${fonteId}`, data.error);
+      else addToast('success', `Ingestão disparada: ${fonteId}`, data.message ?? 'Processo iniciado');
+      void handleAdminRefresh();
+    } catch (err) {
+      addToast('error', 'Falha na atualização', err instanceof Error ? err.message : 'Erro');
+    } finally {
+      setAdminUpdating(prev => ({ ...prev, [fonteId]: false }));
+    }
+  };
+
+  const FONTE_LABELS: Record<string, string> = {
+    sicar: 'SICAR', prodes: 'PRODES', deter: 'DETER', queimadas: 'Queimadas',
+    ucs: 'Unid. Conservação', tis: 'Terras Indígenas', assentamentos: 'Assentamentos', quilombolas: 'Quilombolas',
+  };
+
   const asgRows = analiseASG ? [
     { eixo: 'Ambiental', indicador: 'Desmat. PRODES', valor: analiseASG.area_desmatada_ha != null ? `${analiseASG.area_desmatada_ha} ha` : '—' },
     { eixo: 'Ambiental', indicador: 'Déficit APP',    valor: analiseASG.deficit_app_ha != null ? `${analiseASG.deficit_app_ha} ha` : '—' },
@@ -717,6 +795,9 @@ export default function App() {
           </div>
 
           <div className="topbar-actions" ref={menuRef}>
+            <button type="button" className="theme-gear admin-btn" onClick={() => setAdminOpen(true)} aria-label="Painel Admin" title="Painel Admin">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
+            </button>
             <button type="button" className="theme-gear" onClick={() => setIsThemeMenuOpen((s) => !s)} aria-label="Tema">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.63l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
@@ -994,6 +1075,113 @@ export default function App() {
           </aside>
         </section>
       </main>
+
+      {adminOpen && (
+        <div className="admin-overlay" onClick={(e) => { if (e.target === e.currentTarget) setAdminOpen(false); }}>
+          <div className="admin-modal">
+            <div className="admin-modal-header">
+              <h2>Painel Admin</h2>
+              <button className="admin-close-btn" onClick={() => setAdminOpen(false)} aria-label="Fechar">
+                <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeWidth="2"/></svg>
+              </button>
+            </div>
+
+            {!adminToken ? (
+              <div className="admin-login-form">
+                <p className="admin-login-desc">Acesso restrito. Insira as credenciais de administrador.</p>
+                <input
+                  type="text"
+                  placeholder="Usuário"
+                  value={adminUser}
+                  onChange={(e) => setAdminUser(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void handleAdminLogin(); }}
+                  autoComplete="username"
+                />
+                <input
+                  type="password"
+                  placeholder="Senha"
+                  value={adminPass}
+                  onChange={(e) => setAdminPass(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void handleAdminLogin(); }}
+                  autoComplete="current-password"
+                />
+                <button
+                  className="admin-action-btn admin-action-btn--primary"
+                  onClick={() => void handleAdminLogin()}
+                  disabled={adminLogging || !adminUser || !adminPass}
+                >
+                  {adminLogging ? 'Autenticando...' : 'Entrar'}
+                </button>
+              </div>
+            ) : (
+              <div className="admin-dashboard">
+                <div className="admin-dash-toolbar">
+                  <button
+                    className="admin-action-btn admin-action-btn--secondary"
+                    onClick={() => void handleAdminRefresh()}
+                    disabled={adminChecking}
+                  >
+                    {adminChecking ? 'Verificando...' : 'Verificar Atualizações'}
+                  </button>
+                  <button
+                    className="admin-action-btn admin-action-btn--ghost"
+                    onClick={() => { setAdminToken(null); setAdminStatus(null); setAdminVerificacao(null); }}
+                  >
+                    Sair
+                  </button>
+                </div>
+
+                <div className="admin-fontes-list">
+                  {Object.entries(adminStatus ?? {}).map(([id, st]) => {
+                    const check = adminVerificacao?.find(c => c.id === id);
+                    const label = FONTE_LABELS[id] ?? id;
+                    const isUpdating = adminUpdating[id] ?? false;
+                    return (
+                      <div key={id} className="admin-fonte-row">
+                        <div className="admin-fonte-info">
+                          <span className={`admin-fonte-dot admin-fonte-dot--${st.status}`} />
+                          <span className="admin-fonte-label">{label}</span>
+                          {check && (
+                            <span className="admin-fonte-counts">
+                              {check.total_local.toLocaleString('pt-BR')} local
+                              {check.ha_novos_dados && (
+                                <span className="admin-fonte-novos"> · {check.total_remoto.toLocaleString('pt-BR')} remoto</span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                        <div className="admin-fonte-actions">
+                          {check?.ha_novos_dados && (
+                            <span className="admin-fonte-badge">Novo</span>
+                          )}
+                          {st.status === 'updating' || isUpdating ? (
+                            <span className="admin-fonte-status admin-fonte-status--updating">Atualizando...</span>
+                          ) : st.status === 'concluido' && !check?.ha_novos_dados ? (
+                            <span className="admin-fonte-status admin-fonte-status--ok">Atualizado</span>
+                          ) : (
+                            <button
+                              className="admin-action-btn admin-action-btn--small"
+                              onClick={() => void handleAdminAtualizar(id)}
+                            >
+                              Atualizar
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!adminStatus && !adminChecking && (
+                    <p className="admin-empty-msg">Clique em "Verificar Atualizações" para ver o status dos bancos.</p>
+                  )}
+                  {adminChecking && (
+                    <p className="admin-empty-msg">Consultando serviços...</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
