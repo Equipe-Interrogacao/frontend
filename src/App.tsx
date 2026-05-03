@@ -204,9 +204,11 @@ export default function App() {
   const [assentamentoCount, setAssentamentoCount] = useState<number | null>(null);
   const [quilombolaCount, setQuilombolaCount] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
+  const [chatSending, setChatSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 1, role: 'incoming', text: 'Olá! Busque uma propriedade pelo código CAR para consultas ASG.' }
   ]);
+  const chatBodyRef = useRef<HTMLDivElement>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const menuRef = useRef<HTMLDivElement>(null);
@@ -663,16 +665,24 @@ export default function App() {
   };
 
   // Chat
+  const scrollChatToBottom = () => {
+    requestAnimationFrame(() => {
+      if (chatBodyRef.current) chatBodyRef.current.scrollTop = chatBodyRef.current.scrollHeight;
+    });
+  };
+
   const handleSendChat = async () => {
     const msg = chatInput.trim();
-    if (!msg) return;
+    if (!msg || chatSending) return;
     setChatMessages((c) => [...c, { id: Date.now(), role: 'outgoing', text: msg }]);
     setChatInput('');
+    setChatSending(true);
+    scrollChatToBottom();
     try {
       const resp = await fetch('/busca_semantica/busca/consulta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pergunta: msg, cod_car: propriedade?.cod_imovel ?? null }),
+        body: JSON.stringify({ pergunta: msg, cod_imovel: propriedade?.cod_imovel ?? null }),
       });
       if (!resp.ok) throw new Error(`status ${resp.status}`);
       const data = await resp.json() as { resposta?: string };
@@ -680,6 +690,9 @@ export default function App() {
     } catch (err) {
       addToast('error', 'Erro no chat', err instanceof Error ? err.message : 'Falha ao consultar.');
       setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: 'Erro ao consultar o serviço de busca.' }]);
+    } finally {
+      setChatSending(false);
+      scrollChatToBottom();
     }
   };
 
@@ -949,12 +962,19 @@ export default function App() {
                   <h3>Chat ASG</h3>
                   {propriedade && <span>{propriedade.cod_imovel}</span>}
                 </header>
-                <div className="chat-placeholder-body">
+                <div className="chat-placeholder-body" ref={chatBodyRef}>
                   {chatMessages.map((m) => (
-                    <div key={m.id} className={`chat-msg chat-msg-${m.role}`}>
-                      <span>{m.text}</span>
+                    <div key={m.id} className={`chat-bubble chat-bubble-${m.role}`}>
+                      {m.text.split('\n').map((line, i) => (
+                        <span key={i}>{line}{i < m.text.split('\n').length - 1 && <br />}</span>
+                      ))}
                     </div>
                   ))}
+                  {chatSending && (
+                    <div className="chat-bubble chat-bubble-incoming chat-bubble-typing">
+                      <span className="chat-dot" /><span className="chat-dot" /><span className="chat-dot" />
+                    </div>
+                  )}
                 </div>
                 <footer className="chat-placeholder-footer">
                   <input
@@ -963,10 +983,10 @@ export default function App() {
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
-                    disabled={!propriedade}
+                    disabled={!propriedade || chatSending}
                   />
-                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim()}>
-                    Enviar
+                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim() || chatSending}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
                   </button>
                 </footer>
               </section>
