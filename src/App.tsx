@@ -39,6 +39,56 @@ type AnaliseASG = {
   sobreposicao_ti?: string;
 };
 
+type InpeStats = {
+  prodes: number;
+  prodes_area_ha: number;
+  deter: number;
+  focos: number;
+};
+
+type AreasProtegidasStats = {
+  uc: { cod_uc: string; nome?: string }[];
+  ti: { cod_ti: string; nome?: string; etnia?: string }[];
+  assentamento: { cod_sipra: string; nome?: string }[];
+  quilombola: { cod_quilombola: string; nome?: string }[];
+};
+
+type IndicadorASG = {
+  categoria: string;
+  nome: string;
+  fonte: string;
+  data_referencia: string;
+  valor?: number | null;
+  unidade?: string | null;
+  status: 'ok' | 'atencao' | 'critico' | 'pendente';
+  detalhe?: string | null;
+};
+
+type RelatorioASG = {
+  cod_imovel: string;
+  municipio?: string;
+  uf?: string;
+  area_ha?: number;
+  status_car?: string;
+  gerado_em: string;
+  indicadores: IndicadorASG[];
+};
+
+type ResumoASGConsolidado = {
+  indice_risco: number;
+  nivel: 'baixo' | 'medio' | 'alto';
+  desmatamento_relativo?: number | null;
+};
+
+type AdminFonteStatus = { status: 'concluido' | 'updating' | 'erro'; progresso: number };
+type AdminFonteCheck = { id: string; fonte: string; total_local: number; total_remoto: number; ha_novos_dados: boolean };
+
+type InpeFeature = {
+  id: number;
+  geometria?: { type: string; coordinates: unknown };
+  [key: string]: unknown;
+};
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const THEME_KEY = 'stratos-theme';
@@ -143,13 +193,37 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [propriedade, setPropriedade] = useState<PropriedadeBackend | null>(null);
   const [analiseASG, setAnaliseASG] = useState<AnaliseASG | null>(null);
+  const [relatorioASG, setRelatorioASG] = useState<RelatorioASG | null>(null);
+  const [resumoASG, setResumoASG] = useState<ResumoASGConsolidado | null>(null);
+  const [inpeStats, setInpeStats] = useState<InpeStats | null>(null);
+  const [areasProtegidasStats, setAreasProtegidasStats] = useState<AreasProtegidasStats | null>(null);
   const [dbStatus, setDbStatus] = useState<DbStatus>('checking');
   const [dbMessage, setDbMessage] = useState('Verificando banco...');
+  const [inpeProdesCount, setInpeProdesCount] = useState<number | null>(null);
+  const [inpeDeterCount, setInpeDeterCount] = useState<number | null>(null);
+  const [inpeFocosCount, setInpeFocosCount] = useState<number | null>(null);
+  const [ucCount, setUcCount] = useState<number | null>(null);
+  const [tiCount, setTiCount] = useState<number | null>(null);
+  const [assentamentoCount, setAssentamentoCount] = useState<number | null>(null);
+  const [quilombolaCount, setQuilombolaCount] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
+  const [chatSending, setChatSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 1, role: 'incoming', text: 'Olá! Busque uma propriedade pelo código CAR para consultas ASG.' }
   ]);
+  const chatBodyRef = useRef<HTMLDivElement>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // Admin panel state
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminUser, setAdminUser] = useState('');
+  const [adminPass, setAdminPass] = useState('');
+  const [adminLogging, setAdminLogging] = useState(false);
+  const [adminStatus, setAdminStatus] = useState<Record<string, AdminFonteStatus> | null>(null);
+  const [adminVerificacao, setAdminVerificacao] = useState<AdminFonteCheck[] | null>(null);
+  const [adminChecking, setAdminChecking] = useState(false);
+  const [adminUpdating, setAdminUpdating] = useState<Record<string, boolean>>({});
 
   const menuRef = useRef<HTMLDivElement>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -157,6 +231,23 @@ export default function App() {
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const resultLayerRef = useRef<L.LayerGroup | null>(null);
   const neighborsLayerRef = useRef<L.LayerGroup | null>(null);
+  const prodesLayerRef = useRef<L.LayerGroup | null>(null);
+  const deterLayerRef = useRef<L.LayerGroup | null>(null);
+  const focosLayerRef = useRef<L.LayerGroup | null>(null);
+  const ucLayerRef = useRef<L.LayerGroup | null>(null);
+  const tiLayerRef = useRef<L.LayerGroup | null>(null);
+  const assentamentoLayerRef = useRef<L.LayerGroup | null>(null);
+  const quilombolaLayerRef = useRef<L.LayerGroup | null>(null);
+
+  type LayerId = 'prodes' | 'deter' | 'queimadas' | 'uc' | 'ti' | 'assentamento' | 'quilombola';
+  const [layerVisible, setLayerVisible] = useState<Record<LayerId, boolean>>({
+    prodes: false, deter: false, queimadas: false,
+    uc: false, ti: false, assentamento: false, quilombola: false,
+  });
+  const layerLoadingRef = useRef<Record<LayerId, boolean>>({
+    prodes: false, deter: false, queimadas: false,
+    uc: false, ti: false, assentamento: false, quilombola: false,
+  });
 
   // Toast helpers
   const dismissToast = useCallback((id: number) => {
@@ -187,11 +278,18 @@ export default function App() {
         if (!active) return;
         if (p['sicarSpDisponivel'] === true) {
           setDbStatus('available');
-          setDbMessage(`Banco com ${String(p['total_sp'] ?? p['total'] ?? '?')} propriedades SP.`);
+          setDbMessage(`SICAR: ${String(p['total_sp'] ?? p['total'] ?? '?')} propriedades SP.`);
         } else {
           setDbStatus('unavailable');
           setDbMessage('Sem cache SP — busca ingere sob demanda.');
         }
+        if (typeof p['total_prodes'] === 'number') setInpeProdesCount(p['total_prodes']);
+        if (typeof p['total_deter'] === 'number') setInpeDeterCount(p['total_deter']);
+        if (typeof p['total_focos'] === 'number') setInpeFocosCount(p['total_focos']);
+        if (typeof p['total_uc'] === 'number') setUcCount(p['total_uc']);
+        if (typeof p['total_ti'] === 'number') setTiCount(p['total_ti']);
+        if (typeof p['total_assentamento'] === 'number') setAssentamentoCount(p['total_assentamento']);
+        if (typeof p['total_quilombola'] === 'number') setQuilombolaCount(p['total_quilombola']);
       })
       .catch(() => {
         if (!active) return;
@@ -224,10 +322,17 @@ export default function App() {
     tileLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap'
     }).addTo(map);
+    prodesLayerRef.current = L.layerGroup().addTo(map);
+    deterLayerRef.current = L.layerGroup().addTo(map);
+    focosLayerRef.current = L.layerGroup().addTo(map);
+    ucLayerRef.current = L.layerGroup().addTo(map);
+    tiLayerRef.current = L.layerGroup().addTo(map);
+    assentamentoLayerRef.current = L.layerGroup().addTo(map);
+    quilombolaLayerRef.current = L.layerGroup().addTo(map);
     neighborsLayerRef.current = L.layerGroup().addTo(map);
     resultLayerRef.current = L.layerGroup().addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
-    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; };
+    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; ucLayerRef.current = null; tiLayerRef.current = null; assentamentoLayerRef.current = null; quilombolaLayerRef.current = null; };
   }, []);
 
   // Tile ao mudar tema
@@ -241,6 +346,206 @@ export default function App() {
     tileLayerRef.current = next;
   }, [theme]);
 
+  // Carrega overlays INPE usando queries espaciais (ST_Intersects / ST_DWithin)
+  const carregarInpe = useCallback(async (codImovel: string) => {
+    prodesLayerRef.current?.clearLayers();
+    deterLayerRef.current?.clearLayers();
+    focosLayerRef.current?.clearLayers();
+    setInpeStats(null);
+
+    // PRODES — ST_Intersects com a propriedade (laranja)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/desmatamento-prodes/por-propriedade/${encodeURIComponent(codImovel)}`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = prodesLayerRef.current;
+        if (!layer) return;
+        let totalHa = 0;
+        for (const p of list) {
+          if (!p.geometria) continue;
+          totalHa += ((p['area_km2'] as number) ?? 0) * 100;
+          L.geoJSON(p.geometria as GeoJSON.Geometry, {
+            style: { color: '#d97706', weight: 1.5, fillColor: '#fbbf24', fillOpacity: 0.35 }
+          }).bindTooltip(
+            `PRODES ${p['ano'] ?? ''} · ${p['area_km2'] != null ? `${(p['area_km2'] as number).toFixed(2)} km²` : ''}`,
+            { sticky: true, opacity: 0.9 }
+          ).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), prodes: list.length, prodes_area_ha: Math.round(totalHa) }));
+        if (list.length > 0) addToast('warning', `PRODES: ${list.length} polígono(s) na propriedade`, `~${Math.round(totalHa)} ha desmatados`);
+      } catch { /* silently ignore */ }
+    })();
+
+    // DETER — ST_Intersects com a propriedade (vermelho)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/alerta-deter/por-propriedade/${encodeURIComponent(codImovel)}`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = deterLayerRef.current;
+        if (!layer) return;
+        for (const d of list) {
+          if (!d.geometria) continue;
+          L.geoJSON(d.geometria as GeoJSON.Geometry, {
+            style: { color: '#dc2626', weight: 1.5, fillColor: '#f87171', fillOpacity: 0.4 }
+          }).bindTooltip(`DETER · ${d['classname'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), deter: list.length }));
+        if (list.length > 0) addToast('error', `DETER: ${list.length} alerta(s) na propriedade`, 'Sobreposição direta detectada');
+      } catch { /* silently ignore */ }
+    })();
+
+    // Focos — ST_DWithin 10 km da propriedade (amarelo)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/foco-queimada/por-propriedade/${encodeURIComponent(codImovel)}?buffer_m=10000`
+        );
+        if (!r.ok) return;
+        const list = await r.json() as InpeFeature[];
+        const layer = focosLayerRef.current;
+        if (!layer) return;
+        for (const f of list) {
+          const lat = f['latitude'] as number | undefined;
+          const lon = f['longitude'] as number | undefined;
+          if (lat == null || lon == null) continue;
+          L.circleMarker([lat, lon], {
+            radius: 4, color: '#92400e', weight: 1,
+            fillColor: '#f59e0b', fillOpacity: 0.75
+          }).bindTooltip(
+            `Foco · ${f['satelite'] ?? ''} · ${f['data_hora_gmt'] ? new Date(f['data_hora_gmt'] as string).toLocaleDateString('pt-BR') : ''}`,
+            { sticky: true, opacity: 0.9 }
+          ).addTo(layer);
+        }
+        setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), focos: list.length }));
+        if (list.length > 0) addToast('warning', `Queimadas: ${list.length} foco(s) (raio 10 km)`, 'Detectados 2016–2025');
+      } catch { /* silently ignore */ }
+    })();
+  }, [addToast]);
+
+  const toggleCamada = useCallback(async (id: LayerId) => {
+    const isOn = !layerVisible[id];
+    setLayerVisible(prev => ({ ...prev, [id]: isOn }));
+
+    const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
+      prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
+      uc: ucLayerRef, ti: tiLayerRef, assentamento: assentamentoLayerRef, quilombola: quilombolaLayerRef,
+    };
+    const layer = layerMap[id].current;
+    if (!layer) return;
+
+    if (!isOn) { layer.clearLayers(); return; }
+    if (layerLoadingRef.current[id]) return;
+    layerLoadingRef.current[id] = true;
+    layer.clearLayers();
+
+    const configs: Record<LayerId, { url: string; render: (f: InpeFeature, layer: L.LayerGroup) => void }> = {
+      prodes: {
+        url: '/gerenciamento_banco/banco/desmatamento-prodes?uf=SP&limit=1000',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#d97706', weight: 1, fillColor: '#fbbf24', fillOpacity: 0.3 }
+          }).bindTooltip(`PRODES ${f['ano'] ?? ''} · ${f['area_km2'] != null ? `${(f['area_km2'] as number).toFixed(2)} km²` : ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      deter: {
+        url: '/gerenciamento_banco/banco/alerta-deter?uf=SP&limit=1000',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#dc2626', weight: 1, fillColor: '#f87171', fillOpacity: 0.35 }
+          }).bindTooltip(`DETER · ${f['classname'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      queimadas: {
+        url: '/gerenciamento_banco/banco/foco-queimada?estado=SP&limit=2000',
+        render: (f, l) => {
+          const lat = f['latitude'] as number | undefined;
+          const lon = f['longitude'] as number | undefined;
+          if (lat == null || lon == null) return;
+          L.circleMarker([lat, lon], { radius: 3, color: '#92400e', weight: 1, fillColor: '#f59e0b', fillOpacity: 0.7 })
+            .bindTooltip(`Foco · ${f['satelite'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      uc: {
+        url: '/gerenciamento_banco/banco/unidade-conservacao?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#059669', weight: 1.5, fillColor: '#34d399', fillOpacity: 0.3 }
+          }).bindTooltip(`UC: ${f['nome'] ?? f['cod_uc'] ?? ''} · ${f['categoria'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      ti: {
+        url: '/gerenciamento_banco/banco/terra-indigena?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#7c3aed', weight: 1.5, fillColor: '#a78bfa', fillOpacity: 0.35 }
+          }).bindTooltip(`TI: ${f['nome'] ?? f['cod_ti'] ?? ''} · ${f['etnia'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      assentamento: {
+        url: '/gerenciamento_banco/banco/assentamento?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#b45309', weight: 1.5, fillColor: '#fcd34d', fillOpacity: 0.3 }
+          }).bindTooltip(`Assentamento: ${f['nome'] ?? f['cod_sipra'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+      quilombola: {
+        url: '/gerenciamento_banco/banco/quilombola?uf=SP&limit=500',
+        render: (f, l) => {
+          if (!f.geometria) return;
+          L.geoJSON(f.geometria as GeoJSON.Geometry, {
+            style: { color: '#be185d', weight: 1.5, fillColor: '#f472b6', fillOpacity: 0.3 }
+          }).bindTooltip(`Quilombola: ${f['nome'] ?? f['cod_quilombola'] ?? ''}`, { sticky: true, opacity: 0.9 }).addTo(l);
+        },
+      },
+    };
+
+    try {
+      const r = await fetch(configs[id].url);
+      if (!r.ok) return;
+      const list = await r.json() as InpeFeature[];
+      for (const f of list) configs[id].render(f, layer);
+    } catch { /* silently ignore */ } finally {
+      layerLoadingRef.current[id] = false;
+    }
+  }, [layerVisible]);
+
+  const carregarAreasProtegidas = useCallback(async (codImovel: string) => {
+    setAreasProtegidasStats(null);
+    const base = `/gerenciamento_banco/banco`;
+    const endpoints: [keyof AreasProtegidasStats, string][] = [
+      ['uc', 'unidade-conservacao'],
+      ['ti', 'terra-indigena'],
+      ['assentamento', 'assentamento'],
+      ['quilombola', 'quilombola'],
+    ];
+    const result: AreasProtegidasStats = { uc: [], ti: [], assentamento: [], quilombola: [] };
+    await Promise.all(
+      endpoints.map(async ([chave, path]) => {
+        try {
+          const r = await fetch(`${base}/${path}/por-propriedade/${encodeURIComponent(codImovel)}`);
+          if (r.ok) result[chave] = await r.json();
+        } catch { /* silently ignore */ }
+      })
+    );
+    setAreasProtegidasStats(result);
+    const n_ti = result.ti.length;
+    const n_uc = result.uc.length;
+    if (n_ti > 0) addToast('error', `Terra Indígena: ${n_ti} sobreposição(ões)`, result.ti.map(t => t.nome ?? t.cod_ti).join(', '));
+    if (n_uc > 0) addToast('warning', `UC: ${n_uc} sobreposição(ões)`, result.uc.map(u => u.nome ?? u.cod_uc).join(', '));
+  }, [addToast]);
+
   // Busca
   const handleSearch = async () => {
     const query = searchValue.trim();
@@ -250,8 +555,15 @@ export default function App() {
 
     resultLayer.clearLayers();
     neighborsLayerRef.current?.clearLayers();
+    prodesLayerRef.current?.clearLayers();
+    deterLayerRef.current?.clearLayers();
+    focosLayerRef.current?.clearLayers();
     setPropriedade(null);
     setAnaliseASG(null);
+    setRelatorioASG(null);
+    setResumoASG(null);
+    setInpeStats(null);
+    setAreasProtegidasStats(null);
     if (!query) return;
 
     // Coordenadas
@@ -305,7 +617,11 @@ export default function App() {
         addToast('success', 'Propriedade encontrada',
           `${prop.municipio ?? ''}${prop.uf ? `/${prop.uf}` : ''}${prop.area ? ` · ${prop.area.toFixed(1)} ha` : ''}`);
 
-        // Load neighbors in the same municipality (background layer)
+        // Dados INPE espacialmente sobrepostos à propriedade (ST_Intersects / ST_DWithin)
+        void carregarInpe(prop.cod_imovel);
+        void carregarAreasProtegidas(prop.cod_imovel);
+
+        // Propriedades vizinhas (background layer)
         if (prop.municipio && prop.uf) {
           void (async () => {
             try {
@@ -332,14 +648,28 @@ export default function App() {
         addToast('warning', 'Propriedade sem geometria', 'Dados cadastrais encontrados, mas sem polígono no banco.');
       }
 
-      // Análise ASG
-      try {
-        const asgResp = await fetch(`/cruzamento_asg/asg/analises/${encodeURIComponent(cod)}`);
-        if (asgResp.ok) {
-          setAnaliseASG(await asgResp.json() as AnaliseASG);
-          addToast('success', 'Análise ASG carregada');
-        }
-      } catch { /* sem ASG, não é crítico */ }
+      // Análise ASG (legado) + Relatório ASG (novo)
+      void (async () => {
+        try {
+          const asgResp = await fetch(`/cruzamento_asg/asg/analises/${encodeURIComponent(cod)}`);
+          if (asgResp.ok) setAnaliseASG(await asgResp.json() as AnaliseASG);
+        } catch { /* não crítico */ }
+      })();
+      void (async () => {
+        try {
+          const relResp = await fetch(`/cruzamento_asg/asg/relatorio/${encodeURIComponent(cod)}`);
+          if (relResp.ok) setRelatorioASG(await relResp.json() as RelatorioASG);
+        } catch { /* não crítico */ }
+      })();
+      void (async () => {
+        try {
+          const consResp = await fetch(`/cruzamento_asg/relatorio/car/${encodeURIComponent(cod)}/asg`);
+          if (consResp.ok) {
+            const data = await consResp.json() as { resumo_asg: ResumoASGConsolidado };
+            setResumoASG(data.resumo_asg);
+          }
+        } catch { /* não crítico */ }
+      })();
 
     } catch (err) {
       addToast('error', 'Erro de rede', err instanceof Error ? err.message : 'Erro desconhecido');
@@ -349,16 +679,24 @@ export default function App() {
   };
 
   // Chat
+  const scrollChatToBottom = () => {
+    requestAnimationFrame(() => {
+      if (chatBodyRef.current) chatBodyRef.current.scrollTop = chatBodyRef.current.scrollHeight;
+    });
+  };
+
   const handleSendChat = async () => {
     const msg = chatInput.trim();
-    if (!msg) return;
+    if (!msg || chatSending) return;
     setChatMessages((c) => [...c, { id: Date.now(), role: 'outgoing', text: msg }]);
     setChatInput('');
+    setChatSending(true);
+    scrollChatToBottom();
     try {
       const resp = await fetch('/busca_semantica/busca/consulta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pergunta: msg, cod_car: propriedade?.cod_imovel ?? null }),
+        body: JSON.stringify({ pergunta: msg, cod_imovel: propriedade?.cod_imovel ?? null }),
       });
       if (!resp.ok) throw new Error(`status ${resp.status}`);
       const data = await resp.json() as { resposta?: string };
@@ -366,16 +704,83 @@ export default function App() {
     } catch (err) {
       addToast('error', 'Erro no chat', err instanceof Error ? err.message : 'Falha ao consultar.');
       setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: 'Erro ao consultar o serviço de busca.' }]);
+    } finally {
+      setChatSending(false);
+      scrollChatToBottom();
     }
   };
 
+  // Admin handlers
+  const handleAdminLogin = async () => {
+    if (adminLogging) return;
+    setAdminLogging(true);
+    try {
+      const resp = await fetch('/gerenciamento_banco/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: adminUser, password: adminPass }),
+      });
+      if (!resp.ok) throw new Error('Usuário ou senha inválidos');
+      const data = await resp.json() as { token: string };
+      setAdminToken(data.token);
+      setAdminUser('');
+      setAdminPass('');
+      void handleAdminRefresh(data.token);
+    } catch (err) {
+      addToast('error', 'Falha no login admin', err instanceof Error ? err.message : 'Erro');
+    } finally {
+      setAdminLogging(false);
+    }
+  };
+
+  const handleAdminRefresh = async (token?: string) => {
+    const t = token ?? adminToken;
+    if (!t) return;
+    setAdminChecking(true);
+    try {
+      const headers = { Authorization: `Bearer ${t}` };
+      const [statusResp, checkResp] = await Promise.all([
+        fetch('/gerenciamento_banco/admin/status', { headers }),
+        fetch('/gerenciamento_banco/admin/verificar-tudo', { headers }),
+      ]);
+      if (statusResp.ok) setAdminStatus(await statusResp.json() as Record<string, AdminFonteStatus>);
+      if (checkResp.ok) setAdminVerificacao(await checkResp.json() as AdminFonteCheck[]);
+    } catch { /* silently ignore */ } finally {
+      setAdminChecking(false);
+    }
+  };
+
+  const handleAdminAtualizar = async (fonteId: string) => {
+    if (!adminToken || adminUpdating[fonteId]) return;
+    setAdminUpdating(prev => ({ ...prev, [fonteId]: true }));
+    try {
+      const resp = await fetch(`/gerenciamento_banco/admin/atualizar/${fonteId}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const data = await resp.json() as { message?: string; error?: string };
+      if (data.error) addToast('error', `Erro ao atualizar ${fonteId}`, data.error);
+      else addToast('success', `Ingestão disparada: ${fonteId}`, data.message ?? 'Processo iniciado');
+      void handleAdminRefresh();
+    } catch (err) {
+      addToast('error', 'Falha na atualização', err instanceof Error ? err.message : 'Erro');
+    } finally {
+      setAdminUpdating(prev => ({ ...prev, [fonteId]: false }));
+    }
+  };
+
+  const FONTE_LABELS: Record<string, string> = {
+    sicar: 'SICAR', prodes: 'PRODES', deter: 'DETER', queimadas: 'Queimadas',
+    ucs: 'Unid. Conservação', tis: 'Terras Indígenas', assentamentos: 'Assentamentos', quilombolas: 'Quilombolas',
+  };
+
   const asgRows = analiseASG ? [
-    { eixo: 'Ambiental', indicador: 'APP',   valor: analiseASG.deficit_app_ha            != null ? `${analiseASG.deficit_app_ha} ha`            : '—' },
-    { eixo: 'Ambiental', indicador: 'RL',    valor: analiseASG.deficit_reserva_legal_ha  != null ? `${analiseASG.deficit_reserva_legal_ha} ha`  : '—' },
-    { eixo: 'Ambiental', indicador: 'DETER', valor: analiseASG.area_desmatada_ha         != null ? `${analiseASG.area_desmatada_ha} ha`         : '—' },
-    { eixo: 'Social',    indicador: 'UCs',   valor: analiseASG.sobreposicao_uc  ?? '—' },
-    { eixo: 'Social',    indicador: 'TI',    valor: analiseASG.sobreposicao_ti  ?? '—' },
-    { eixo: 'Governança',indicador: 'CAR',   valor: propriedade?.status_imovel  ?? '—' },
+    { eixo: 'Ambiental', indicador: 'Desmat. PRODES', valor: analiseASG.area_desmatada_ha != null ? `${analiseASG.area_desmatada_ha} ha` : '—' },
+    { eixo: 'Ambiental', indicador: 'Déficit APP',    valor: analiseASG.deficit_app_ha != null ? `${analiseASG.deficit_app_ha} ha` : '—' },
+    { eixo: 'Ambiental', indicador: 'Déficit RL',     valor: analiseASG.deficit_reserva_legal_ha != null ? `${analiseASG.deficit_reserva_legal_ha} ha` : '—' },
+    { eixo: 'Social',    indicador: 'UCs',            valor: analiseASG.sobreposicao_uc ?? '—' },
+    { eixo: 'Social',    indicador: 'TI',             valor: analiseASG.sobreposicao_ti ?? '—' },
+    { eixo: 'Governança', indicador: 'CAR',           valor: propriedade?.status_imovel ?? '—' },
   ] : [];
 
   return (
@@ -390,6 +795,9 @@ export default function App() {
           </div>
 
           <div className="topbar-actions" ref={menuRef}>
+            <button type="button" className="theme-gear admin-btn" onClick={() => setAdminOpen(true)} aria-label="Painel Admin" title="Painel Admin">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
+            </button>
             <button type="button" className="theme-gear" onClick={() => setIsThemeMenuOpen((s) => !s)} aria-label="Tema">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.63l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
@@ -420,15 +828,9 @@ export default function App() {
             <section className="left-status-panel">
               <h3 className="left-status-title">Status de dados</h3>
 
-              <div className="data-status-row" aria-live="polite">
-                <div className="data-status-header">
-                  <span className={`data-status-dot is-${dbStatus}`} />
-                  <strong className="data-status-label">
-                    SICAR-SP: {dbStatus === 'available' ? 'Disponível' : dbStatus === 'checking' ? 'Verificando...' : 'Sem cache'}
-                  </strong>
-                </div>
-                <span className="data-status-message">{dbMessage}</span>
-              </div>
+              {!propriedade && (
+                <p className="left-status-empty">Busque um imóvel pelo código CAR para visualizar os dados da propriedade.</p>
+              )}
 
               {propriedade && (
                 <div className="data-status-row">
@@ -445,6 +847,53 @@ export default function App() {
                   {propriedade.cod_municipio_ibge && <span className="data-status-message">IBGE: {propriedade.cod_municipio_ibge}</span>}
                   {propriedade.m_fiscal && <span className="data-status-message">Módulo fiscal: {propriedade.m_fiscal}</span>}
                   {propriedade.dat_criacao && <span className="data-status-message">Criado: {new Date(propriedade.dat_criacao).toLocaleDateString('pt-BR')}</span>}
+                </div>
+              )}
+
+              {inpeStats && (
+                <div className="data-status-row">
+                  <div className="data-status-header">
+                    <span className="data-status-dot" style={{ background: '#d97706' }} />
+                    <strong className="data-status-label">Sobreposição INPE na propriedade</strong>
+                  </div>
+                  <span className="data-status-message" style={{ color: '#d97706' }}>
+                    PRODES: {inpeStats.prodes} polígono(s) · {inpeStats.prodes_area_ha} ha
+                  </span>
+                  <span className="data-status-message" style={{ color: '#dc2626' }}>
+                    DETER: {inpeStats.deter} alerta(s) sobrepostos
+                  </span>
+                  <span className="data-status-message" style={{ color: '#f59e0b' }}>
+                    Queimadas: {inpeStats.focos} foco(s) dentro da propriedade
+                  </span>
+                </div>
+              )}
+
+              {areasProtegidasStats && (
+                <div className="data-status-row">
+                  <div className="data-status-header">
+                    <span className="data-status-dot" style={{ background: '#7c3aed' }} />
+                    <strong className="data-status-label">Áreas Protegidas na propriedade</strong>
+                  </div>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.uc.length > 0 ? '#dc2626' : undefined }}>
+                    UC: {areasProtegidasStats.uc.length > 0
+                      ? areasProtegidasStats.uc.map(u => u.nome ?? u.cod_uc).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.ti.length > 0 ? '#dc2626' : undefined }}>
+                    TI: {areasProtegidasStats.ti.length > 0
+                      ? areasProtegidasStats.ti.map(t => t.nome ?? t.cod_ti).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.assentamento.length > 0 ? '#d97706' : undefined }}>
+                    Assentamento: {areasProtegidasStats.assentamento.length > 0
+                      ? areasProtegidasStats.assentamento.map(a => a.nome ?? a.cod_sipra).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
+                  <span className="data-status-message" style={{ color: areasProtegidasStats.quilombola.length > 0 ? '#d97706' : undefined }}>
+                    Quilombola: {areasProtegidasStats.quilombola.length > 0
+                      ? areasProtegidasStats.quilombola.map(q => q.nome ?? q.cod_quilombola).join(', ')
+                      : 'Nenhuma sobreposição'}
+                  </span>
                 </div>
               )}
             </section>
@@ -464,6 +913,42 @@ export default function App() {
               </button>
             </div>
 
+            <div className="layer-toolbar">
+              {([
+                { id: 'prodes',       label: 'PRODES',        color: '#d97706', count: inpeProdesCount,    unit: 'pol.' },
+                { id: 'deter',        label: 'DETER',         color: '#dc2626', count: inpeDeterCount,     unit: 'alertas' },
+                { id: 'queimadas',    label: 'Queimadas',     color: '#f59e0b', count: inpeFocosCount,     unit: 'focos' },
+                { id: 'uc',           label: 'UC',            color: '#059669', count: ucCount,            unit: 'UCs' },
+                { id: 'ti',           label: 'TI',            color: '#7c3aed', count: tiCount,            unit: 'TIs' },
+                { id: 'assentamento', label: 'Assentamentos', color: '#b45309', count: assentamentoCount,  unit: 'ass.' },
+                { id: 'quilombola',   label: 'Quilombolas',   color: '#be185d', count: quilombolaCount,    unit: 'terr.' },
+              ] as { id: LayerId; label: string; color: string; count: number | null; unit: string }[]).map(({ id, label, color, count, unit }) => {
+                const on = layerVisible[id];
+                const dotClass = count === null ? 'is-checking' : count > 0 ? 'is-available' : 'is-unavailable';
+                return (
+                  <button
+                    key={id}
+                    className={`layer-btn${on ? ' layer-btn--on' : ''}`}
+                    style={on ? { borderColor: color, color } : undefined}
+                    onClick={() => void toggleCamada(id)}
+                    title={on ? `Ocultar ${label}` : `Exibir ${label}`}
+                  >
+                    <span className="layer-btn-eye">
+                      {on
+                        ? <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        : <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                      }
+                    </span>
+                    <span className={`data-status-dot layer-btn-dot ${dotClass}`} />
+                    <span className="layer-btn-label">{label}</span>
+                    {count !== null && count > 0 && (
+                      <span className="layer-btn-count">{count.toLocaleString('pt-BR')} {unit}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="map-stage">
               <div ref={mapContainerRef} id="map-root" className="shell-map" />
             </div>
@@ -475,22 +960,81 @@ export default function App() {
               <section className="asg-report-panel">
                 <header className="asg-report-header">
                   <h3>Reports ASG</h3>
-                  <span>{propriedade?.cod_imovel ?? '—'}</span>
+                  <div className="asg-header-actions">
+                    {resumoASG && (
+                      <span className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}>
+                        Risco {resumoASG.nivel} · {resumoASG.indice_risco.toFixed(0)}/100
+                      </span>
+                    )}
+                    {propriedade && (
+                      <a
+                        className="asg-export-btn"
+                        href={`/cruzamento_asg/relatorio/car/${encodeURIComponent(propriedade.cod_imovel)}/asg/export?formato=gpkg`}
+                        download
+                        title="Exportar GeoPackage para QGIS"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M3 17v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/></svg>
+                        GPKG
+                      </a>
+                    )}
+                  </div>
                 </header>
                 <div className="asg-report-content">
                   {propriedade?.status_imovel && (
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
-                  <div className="unavailable-panel">
-                    <span className="unavailable-panel-icon">
-                      <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
-                    </span>
-                    <div>
-                      <strong>Análise ASG indisponível</strong>
-                      <p>O módulo de cruzamento ambiental, social e de governança ainda está em desenvolvimento.</p>
+
+                  {relatorioASG ? (
+                    <div className="asg-indicadores">
+                      {(['Ambiental', 'Social', 'Governança'] as const).map((cat) => {
+                        const itens = relatorioASG.indicadores.filter(i => i.categoria === cat);
+                        if (!itens.length) return null;
+                        return (
+                          <div key={cat} className="asg-categoria-group">
+                            <span className="asg-categoria-label">{cat}</span>
+                            {itens.map((ind, idx) => (
+                              <div key={idx} className="asg-indicador-row">
+                                <div className="asg-indicador-main">
+                                  <span className="asg-indicador-nome">{ind.nome}</span>
+                                  <span className={`asg-status-badge asg-status-${ind.status}`}>
+                                    {ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente'}
+                                  </span>
+                                </div>
+                                <div className="asg-indicador-valor">
+                                  {ind.valor != null
+                                    ? <strong>{ind.valor.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} {ind.unidade}</strong>
+                                    : ind.detalhe
+                                      ? <strong>{ind.detalhe}</strong>
+                                      : <span>—</span>
+                                  }
+                                  {ind.valor != null && ind.detalhe && (
+                                    <span className="asg-indicador-detalhe">{ind.detalhe}</span>
+                                  )}
+                                </div>
+                                <div className="asg-indicador-meta">
+                                  {ind.fonte} · {ind.data_referencia}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
                     </div>
-                    <button className="unavailable-btn" disabled>Em breve</button>
-                  </div>
+                  ) : propriedade ? (
+                    <div className="asg-loading-panel">
+                      <span className="asg-loading-text">Carregando indicadores ASG...</span>
+                    </div>
+                  ) : (
+                    <div className="unavailable-panel">
+                      <span className="unavailable-panel-icon">
+                        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
+                      </span>
+                      <div>
+                        <strong>Relatório ASG</strong>
+                        <p>Busque um imóvel pelo código CAR para visualizar os indicadores ASG.</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
 
@@ -499,27 +1043,145 @@ export default function App() {
                   <h3>Chat ASG</h3>
                   {propriedade && <span>{propriedade.cod_imovel}</span>}
                 </header>
-                <div className="chat-placeholder-body">
-                  <div className="unavailable-panel">
-                    <span className="unavailable-panel-icon">
-                      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    </span>
-                    <div>
-                      <strong>Chatbot indisponível</strong>
-                      <p>O assistente de linguagem natural para consultas ASG ainda está em desenvolvimento.</p>
+                <div className="chat-placeholder-body" ref={chatBodyRef}>
+                  {chatMessages.map((m) => (
+                    <div key={m.id} className={`chat-bubble chat-bubble-${m.role}`}>
+                      {m.text.split('\n').map((line, i) => (
+                        <span key={i}>{line}{i < m.text.split('\n').length - 1 && <br />}</span>
+                      ))}
                     </div>
-                    <button className="unavailable-btn" disabled>Em breve</button>
-                  </div>
+                  ))}
+                  {chatSending && (
+                    <div className="chat-bubble chat-bubble-incoming chat-bubble-typing">
+                      <span className="chat-dot" /><span className="chat-dot" /><span className="chat-dot" />
+                    </div>
+                  )}
                 </div>
-                <footer className="chat-placeholder-footer is-disabled">
-                  <input type="text" placeholder="Indisponível no momento..." disabled />
-                  <button type="button" disabled>Enviar</button>
+                <footer className="chat-placeholder-footer">
+                  <input
+                    type="text"
+                    placeholder={propriedade ? 'Pergunte sobre esta propriedade...' : 'Busque um CAR primeiro...'}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
+                    disabled={!propriedade || chatSending}
+                  />
+                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim() || chatSending}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+                  </button>
                 </footer>
               </section>
             </div>
           </aside>
         </section>
       </main>
+
+      {adminOpen && (
+        <div className="admin-overlay" onClick={(e) => { if (e.target === e.currentTarget) setAdminOpen(false); }}>
+          <div className="admin-modal">
+            <div className="admin-modal-header">
+              <h2>Painel Admin</h2>
+              <button className="admin-close-btn" onClick={() => setAdminOpen(false)} aria-label="Fechar">
+                <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeWidth="2"/></svg>
+              </button>
+            </div>
+
+            {!adminToken ? (
+              <div className="admin-login-form">
+                <p className="admin-login-desc">Acesso restrito. Insira as credenciais de administrador.</p>
+                <input
+                  type="text"
+                  placeholder="Usuário"
+                  value={adminUser}
+                  onChange={(e) => setAdminUser(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void handleAdminLogin(); }}
+                  autoComplete="username"
+                />
+                <input
+                  type="password"
+                  placeholder="Senha"
+                  value={adminPass}
+                  onChange={(e) => setAdminPass(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void handleAdminLogin(); }}
+                  autoComplete="current-password"
+                />
+                <button
+                  className="admin-action-btn admin-action-btn--primary"
+                  onClick={() => void handleAdminLogin()}
+                  disabled={adminLogging || !adminUser || !adminPass}
+                >
+                  {adminLogging ? 'Autenticando...' : 'Entrar'}
+                </button>
+              </div>
+            ) : (
+              <div className="admin-dashboard">
+                <div className="admin-dash-toolbar">
+                  <button
+                    className="admin-action-btn admin-action-btn--secondary"
+                    onClick={() => void handleAdminRefresh()}
+                    disabled={adminChecking}
+                  >
+                    {adminChecking ? 'Verificando...' : 'Verificar Atualizações'}
+                  </button>
+                  <button
+                    className="admin-action-btn admin-action-btn--ghost"
+                    onClick={() => { setAdminToken(null); setAdminStatus(null); setAdminVerificacao(null); }}
+                  >
+                    Sair
+                  </button>
+                </div>
+
+                <div className="admin-fontes-list">
+                  {Object.entries(adminStatus ?? {}).map(([id, st]) => {
+                    const check = adminVerificacao?.find(c => c.id === id);
+                    const label = FONTE_LABELS[id] ?? id;
+                    const isUpdating = adminUpdating[id] ?? false;
+                    return (
+                      <div key={id} className="admin-fonte-row">
+                        <div className="admin-fonte-info">
+                          <span className={`admin-fonte-dot admin-fonte-dot--${st.status}`} />
+                          <span className="admin-fonte-label">{label}</span>
+                          {check && (
+                            <span className="admin-fonte-counts">
+                              {check.total_local.toLocaleString('pt-BR')} local
+                              {check.ha_novos_dados && (
+                                <span className="admin-fonte-novos"> · {check.total_remoto.toLocaleString('pt-BR')} remoto</span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                        <div className="admin-fonte-actions">
+                          {check?.ha_novos_dados && (
+                            <span className="admin-fonte-badge">Novo</span>
+                          )}
+                          {st.status === 'updating' || isUpdating ? (
+                            <span className="admin-fonte-status admin-fonte-status--updating">Atualizando...</span>
+                          ) : st.status === 'concluido' && !check?.ha_novos_dados ? (
+                            <span className="admin-fonte-status admin-fonte-status--ok">Atualizado</span>
+                          ) : (
+                            <button
+                              className="admin-action-btn admin-action-btn--small"
+                              onClick={() => void handleAdminAtualizar(id)}
+                            >
+                              Atualizar
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!adminStatus && !adminChecking && (
+                    <p className="admin-empty-msg">Clique em "Verificar Atualizações" para ver o status dos bancos.</p>
+                  )}
+                  {adminChecking && (
+                    <p className="admin-empty-msg">Consultando serviços...</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
