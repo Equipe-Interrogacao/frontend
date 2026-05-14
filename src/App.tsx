@@ -244,6 +244,7 @@ export default function App() {
     prodes: false, deter: false, queimadas: false,
     uc: false, ti: false, assentamento: false, quilombola: false,
   });
+  const [, forceLayerLoadingRender] = useState(0);
   const layerLoadingRef = useRef<Record<LayerId, boolean>>({
     prodes: false, deter: false, queimadas: false,
     uc: false, ti: false, assentamento: false, quilombola: false,
@@ -442,6 +443,7 @@ export default function App() {
     if (!isOn) { layer.clearLayers(); return; }
     if (layerLoadingRef.current[id]) return;
     layerLoadingRef.current[id] = true;
+    forceLayerLoadingRender((v) => v + 1);
     layer.clearLayers();
 
     const configs: Record<LayerId, { url: string; render: (f: InpeFeature, layer: L.LayerGroup) => void }> = {
@@ -518,6 +520,7 @@ export default function App() {
       for (const f of list) configs[id].render(f, layer);
     } catch { /* silently ignore */ } finally {
       layerLoadingRef.current[id] = false;
+      forceLayerLoadingRender((v) => v + 1);
     }
   }, [layerVisible]);
 
@@ -924,11 +927,12 @@ export default function App() {
                 { id: 'quilombola',   label: 'Quilombolas',   color: '#be185d', count: quilombolaCount,    unit: 'terr.' },
               ] as { id: LayerId; label: string; color: string; count: number | null; unit: string }[]).map(({ id, label, color, count, unit }) => {
                 const on = layerVisible[id];
+                const loading = layerLoadingRef.current[id];
                 const dotClass = count === null ? 'is-checking' : count > 0 ? 'is-available' : 'is-unavailable';
                 return (
                   <button
                     key={id}
-                    className={`layer-btn${on ? ' layer-btn--on' : ''}`}
+                    className={`layer-btn${on ? ' layer-btn--on' : ''}${loading ? ' layer-btn-loading' : ''}`}
                     style={on ? { borderColor: color, color } : undefined}
                     onClick={() => void toggleCamada(id)}
                     title={on ? `Ocultar ${label}` : `Exibir ${label}`}
@@ -962,7 +966,10 @@ export default function App() {
                   <h3>Reports ASG</h3>
                   <div className="asg-header-actions">
                     {resumoASG && (
-                      <span className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}>
+                      <span
+                        className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}
+                        title={`Risco ${resumoASG.nivel} · ${resumoASG.indice_risco.toFixed(0)}/100`}
+                      >
                         Risco {resumoASG.nivel} · {resumoASG.indice_risco.toFixed(0)}/100
                       </span>
                     )}
@@ -996,9 +1003,14 @@ export default function App() {
                               <div key={idx} className="asg-indicador-row">
                                 <div className="asg-indicador-main">
                                   <span className="asg-indicador-nome">{ind.nome}</span>
-                                  <span className={`asg-status-badge asg-status-${ind.status}`}>
-                                    {ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente'}
-                                  </span>
+                                  {(() => {
+                                    const statusLabel = ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente';
+                                    return (
+                                      <span className={`asg-status-badge asg-status-${ind.status}`} title={statusLabel}>
+                                        {statusLabel}
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="asg-indicador-valor">
                                   {ind.valor != null
@@ -1008,7 +1020,7 @@ export default function App() {
                                       : <span>—</span>
                                   }
                                   {ind.valor != null && ind.detalhe && (
-                                    <span className="asg-indicador-detalhe">{ind.detalhe}</span>
+                                    <span className="asg-indicador-detalhe" title={String(ind.detalhe)}>{ind.detalhe}</span>
                                   )}
                                 </div>
                                 <div className="asg-indicador-meta">
@@ -1041,7 +1053,7 @@ export default function App() {
               <section className="chat-placeholder">
                 <header className="chat-placeholder-header">
                   <h3>Chat ASG</h3>
-                  {propriedade && <span>{propriedade.cod_imovel}</span>}
+                  {propriedade && <span title={propriedade.cod_imovel}>{propriedade.cod_imovel}</span>}
                 </header>
                 <div className="chat-placeholder-body" ref={chatBodyRef}>
                   {chatMessages.map((m) => (
