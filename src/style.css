@@ -611,6 +611,98 @@ body {
 
 /* ── Disabled chat footer ────────────────────────────────────────────────── */
 
+/* ── Clickable CAR codes in chat ─────────────────────────────────────────── */
+
+.chat-car-btn {
+  display: inline;
+  color: #0d6ebd;
+  font-size: 0.72rem;
+  font-family: 'Courier New', monospace;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(13, 110, 189, 0.5);
+  text-underline-offset: 2px;
+  transition: color 0.13s, text-decoration-color 0.13s;
+}
+.chat-car-btn:hover {
+  color: #0a58ca;
+  text-decoration-color: #0a58ca;
+}
+:root[data-theme='dark'] .chat-car-btn {
+  color: #7ec8e3;
+  text-decoration-color: rgba(126, 200, 227, 0.5);
+}
+:root[data-theme='dark'] .chat-car-btn:hover {
+  color: #aeddee;
+  text-decoration-color: #aeddee;
+}
+
+/* ── Suggestion chips (inside chat body) ─────────────────────────────────── */
+
+.chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-self: flex-start;
+  padding: 0.1rem 0;
+  max-width: 92%;
+}
+
+.chat-suggestion-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid rgba(42, 167, 217, 0.38);
+  background: transparent;
+  color: #0d6ebd;
+  font-size: 0.68rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.13s, border-color 0.13s, color 0.13s;
+  white-space: nowrap;
+}
+.chat-suggestion-btn:hover {
+  background: rgba(42, 167, 217, 0.12);
+  border-color: rgba(42, 167, 217, 0.6);
+}
+:root[data-theme='dark'] .chat-suggestion-btn {
+  color: #7ec8e3;
+  border-color: rgba(42, 167, 217, 0.28);
+}
+:root[data-theme='dark'] .chat-suggestion-btn:hover {
+  background: rgba(42, 167, 217, 0.12);
+}
+
+/* ── Chat clear button ───────────────────────────────────────────────────── */
+
+.chat-clear-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-soft);
+  padding: 3px 4px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.13s, background 0.13s;
+}
+.chat-clear-btn:hover {
+  color: var(--text-main);
+  background: var(--gear-bg-hover);
+}
+.chat-clear-btn svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .chat-placeholder-footer.is-disabled {
   opacity: 0.5;
   pointer-events: none;
