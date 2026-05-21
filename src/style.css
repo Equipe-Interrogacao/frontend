@@ -312,8 +312,10 @@ body {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.35rem 0.5rem;
+  padding-right: 2rem;
   font-size: 0.72rem;
   overflow: hidden;
+  position: relative;
 }
 
 .asg-report-header h3 {
@@ -768,8 +770,10 @@ body {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.55rem 0.65rem;
+  padding-right: 2rem;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.5));
   overflow: hidden;
+  position: relative;
 }
 
 :root[data-theme='dark'] .chat-placeholder-header {
@@ -1158,6 +1162,89 @@ body {
   font-weight: 400;
 }
 
+/* Search hint below the CAR input */
+.map-search-box .search-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--text-muted, #9aa9c4);
+}
+
+/* Empty state for ASG right panel when no property selected */
+.asg-empty-state {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 1rem;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+  color: var(--text-muted, #9aa9c4);
+}
+.asg-empty-state .asg-empty-icon {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.03);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.asg-empty-state strong {
+  display: block;
+  color: var(--text, #e2e8f0);
+  margin-bottom: 0.25rem;
+}
+
+/* Right panel collapse states */
+.right-panel-report-only .right-split-panel { display: grid; grid-template-rows: 1fr 40px; gap: 0; }
+.right-panel-chat-only .right-split-panel   { display: grid; grid-template-rows: 40px 1fr; gap: 0; }
+
+.panel-collapse-btn {
+  position: absolute;
+  right: 0.45rem;
+  top: 50%;
+  transform: translateY(-50%) rotate(0deg);
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.05);
+  border: none;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+.panel-collapse-btn:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.1);
+  transform: translateY(-50%) rotate(90deg);
+}
+.panel-collapse-btn.is-collapsed { transform: translateY(-50%) rotate(0deg); }
+.panel-collapse-btn.is-expanded { transform: translateY(-50%) rotate(90deg); }
+.panel-collapse-btn.is-expanded:hover { transform: translateY(-50%) rotate(0deg); }
+
+.right-split-panel,
+.asg-report-panel,
+.chat-placeholder {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.right-panel-report-only .asg-report-panel,
+.right-panel-chat-only .chat-placeholder {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.right-panel-report-only .chat-placeholder,
+.right-panel-chat-only .asg-report-panel {
+  opacity: 0.6;
+}
+
 .left-status-empty {
   font-size: 0.78rem;
   color: var(--text-soft);
@@ -1257,14 +1344,17 @@ body {
 
 .toast-container {
   position: fixed;
-  top: 1.25rem;
-  right: 1.25rem;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 9999;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 0.65rem;
   pointer-events: none;
-  width: 340px;
+  width: min(960px, calc(100vw - 2rem));
 }
 
 .toast {
@@ -1273,31 +1363,33 @@ body {
   gap: 0.7rem;
   background: var(--control-bg);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 24px;
   padding: 0.75rem 0.85rem 0.6rem;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.13), 0 1.5px 5px rgba(0, 0, 0, 0.07);
   pointer-events: all;
   position: relative;
   overflow: hidden;
   animation: toast-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
-  border-left-width: 4px;
+  border-top-width: 3px;
+  min-width: 280px;
+  max-width: 340px;
 }
 
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateX(60px) scale(0.97);
+    transform: translateY(8px) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateX(0) scale(1);
+    transform: translateY(0) scale(1);
   }
 }
 
-.toast-success  { border-left-color: #22c55e; }
-.toast-error    { border-left-color: #ef4444; }
-.toast-warning  { border-left-color: #f59e0b; }
-.toast-info     { border-left-color: #3b82f6; }
+.toast-success  { border-top-color: #22c55e; }
+.toast-error    { border-top-color: #ef4444; }
+.toast-warning  { border-top-color: #f59e0b; }
+.toast-info     { border-top-color: #3b82f6; }
 
 .toast-icon-wrap {
   flex-shrink: 0;

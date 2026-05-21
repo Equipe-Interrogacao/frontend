@@ -187,6 +187,7 @@ function parseCoordinates(input: string): [number, number] | null {
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [rightPanel, setRightPanel] = useState<'both' | 'report-only' | 'chat-only'>('both');
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
@@ -257,8 +258,15 @@ export default function App() {
 
   const addToast = useCallback((type: ToastType, title: string, message?: string) => {
     const id = Date.now() + Math.random();
-    setToasts((prev) => [...prev, { id, type, title, message }]);
+    setToasts((prev) => [...prev.slice(-2), { id, type, title, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_DURATION);
+  }, []);
+
+  const toggleRightPanel = useCallback((which: 'report' | 'chat') => {
+    setRightPanel((prev) => {
+      if (which === 'report') return prev === 'report-only' ? 'both' : 'report-only';
+      return prev === 'chat-only' ? 'both' : 'chat-only';
+    });
   }, []);
 
   // Favicon
@@ -908,12 +916,13 @@ export default function App() {
               <input type="text" value={searchValue}
                 onChange={(e) => setSearchValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void handleSearch(); }}
-                placeholder="Pesquisar CAR"
+                placeholder="Código CAR — ex: SP-3509502-XXXXXXXX"
                 disabled={searching}
               />
               <button type="button" onClick={() => void handleSearch()} disabled={searching}>
                 {searching ? 'Buscando...' : 'Buscar'}
               </button>
+              <small className="search-hint">Ex.: SP-3509502-XXXXXXXX — cole o código CAR completo.</small>
             </div>
 
             <div className="layer-toolbar">
@@ -959,11 +968,19 @@ export default function App() {
           </section>
 
           {/* ── RIGHT ── */}
-          <aside className="shell shell-right">
+          <aside className={`shell shell-right ${rightPanel === 'report-only' ? 'right-panel-report-only' : rightPanel === 'chat-only' ? 'right-panel-chat-only' : ''}`}>
             <div className="right-split-panel">
               <section className="asg-report-panel">
                 <header className="asg-report-header">
                   <h3>Reports ASG</h3>
+                  <button
+                    className={`panel-collapse-btn ${rightPanel === 'report-only' ? 'is-expanded' : ''}`}
+                    onClick={() => toggleRightPanel('report')}
+                    aria-label="Toggle report panel"
+                    aria-pressed={rightPanel === 'report-only'}
+                  >
+                    ▸
+                  </button>
                   <div className="asg-header-actions">
                     {resumoASG && (
                       <span
@@ -991,7 +1008,7 @@ export default function App() {
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
 
-                  {relatorioASG ? (
+                  {rightPanel !== 'chat-only' && (relatorioASG ? (
                     <div className="asg-indicadores">
                       {(['Ambiental', 'Social', 'Governança'] as const).map((cat) => {
                         const itens = relatorioASG.indicadores.filter(i => i.categoria === cat);
@@ -1037,26 +1054,31 @@ export default function App() {
                       <span className="asg-loading-text">Carregando indicadores ASG...</span>
                     </div>
                   ) : (
-                    <div className="unavailable-panel">
-                      <span className="unavailable-panel-icon">
-                        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
-                      </span>
+                    <div className="asg-empty-state">
                       <div>
                         <strong>Relatório ASG</strong>
                         <p>Busque um imóvel pelo código CAR para visualizar os indicadores ASG.</p>
                       </div>
                     </div>
-                  )}
+                  ))}
                 </div>
               </section>
 
               <section className="chat-placeholder">
                 <header className="chat-placeholder-header">
                   <h3>Chat ASG</h3>
+                  <button
+                    className={`panel-collapse-btn ${rightPanel === 'chat-only' ? 'is-expanded' : ''}`}
+                    onClick={() => toggleRightPanel('chat')}
+                    aria-label="Toggle chat panel"
+                    aria-pressed={rightPanel === 'chat-only'}
+                  >
+                    ▸
+                  </button>
                   {propriedade && <span title={propriedade.cod_imovel}>{propriedade.cod_imovel}</span>}
                 </header>
                 <div className="chat-placeholder-body" ref={chatBodyRef}>
-                  {chatMessages.map((m) => (
+                  {rightPanel !== 'report-only' && chatMessages.map((m) => (
                     <div key={m.id} className={`chat-bubble chat-bubble-${m.role}`}>
                       {m.text.split('\n').map((line, i) => (
                         <span key={i}>{line}{i < m.text.split('\n').length - 1 && <br />}</span>
@@ -1070,17 +1092,21 @@ export default function App() {
                   )}
                 </div>
                 <footer className="chat-placeholder-footer">
-                  <input
-                    type="text"
-                    placeholder={propriedade ? 'Pergunte sobre esta propriedade...' : 'Busque um CAR primeiro...'}
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
-                    disabled={!propriedade || chatSending}
-                  />
-                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim() || chatSending}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
-                  </button>
+                  {rightPanel !== 'report-only' && (
+                    <>
+                      <input
+                        type="text"
+                        placeholder={propriedade ? 'Pergunte sobre esta propriedade...' : 'Busque um CAR primeiro...'}
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
+                        disabled={!propriedade || chatSending}
+                      />
+                      <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim() || chatSending}>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+                      </button>
+                    </>
+                  )}
                 </footer>
               </section>
             </div>
