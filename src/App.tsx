@@ -1014,7 +1014,10 @@ export default function App() {
                         const itens = relatorioASG.indicadores.filter(i => i.categoria === cat);
                         if (!itens.length) return null;
                         return (
-                          <div key={cat} className="asg-categoria-group">
+                          <div
+                            key={cat}
+                            className={`asg-categoria-group asg-categoria-${cat.toLowerCase()}`}
+                          >
                             <span className="asg-categoria-label">{cat}</span>
                             {itens.map((ind, idx) => (
                               <div key={idx} className="asg-indicador-row">
