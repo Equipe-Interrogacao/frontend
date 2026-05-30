@@ -214,9 +214,8 @@ function renderChatText(text: string, onCarClick?: (car: string) => void): React
               return (
                 <span key={j} className="chat-car-btn" role="button" tabIndex={0}
                   onClick={() => onCarClick(seg.toUpperCase())}
-                  onKeyDown={(e) => e.key === 'Enter' && onCarClick(seg.toUpperCase())}
-                  title={seg.toUpperCase()}>
-                  {_shortCar(seg)}
+                  onKeyDown={(e) => e.key === 'Enter' && onCarClick(seg.toUpperCase())}>
+                  {seg.toUpperCase()}
                 </span>
               );
             }
@@ -231,7 +230,7 @@ function renderChatText(text: string, onCarClick?: (car: string) => void): React
               ? <span key={`${j}-${k}`} className="chat-car-btn" role="button" tabIndex={0}
                   onClick={() => onCarClick(part.toUpperCase())}
                   onKeyDown={(e) => e.key === 'Enter' && onCarClick(part.toUpperCase())}
-                  title={part.toUpperCase()}>{_shortCar(part)}</span>
+                  >{part.toUpperCase()}</span>
               : part ? <span key={`${j}-${k}`}>{part}</span> : null
           );
         })}

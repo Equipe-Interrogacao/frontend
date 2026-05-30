@@ -623,6 +623,7 @@ body {
   text-decoration-color: rgba(13, 110, 189, 0.5);
   text-underline-offset: 2px;
   transition: color 0.13s, text-decoration-color 0.13s;
+  word-break: break-all;
 }
 .chat-car-btn:hover {
   color: #0a58ca;
