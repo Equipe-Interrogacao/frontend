@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import logoMark from './static/logostratos.png';
+import { AppSettings, DEFAULT_SETTINGS, loadSettings, saveSettings } from './config/appSettings';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,12 @@ type SobreposicaoProdes = {
   por_ano: { ano: number; area_ha: number }[];
 };
 
+type ResumoASGConsolidado = {
+  indice_risco: number;
+  nivel: 'baixo' | 'medio' | 'alto';
+  desmatamento_relativo?: number | null;
+};
+
 type AreasProtegidasStats = {
   uc: { cod_uc: string; nome?: string }[];
   ti: { cod_ti: string; nome?: string; etnia?: string }[];
@@ -80,28 +87,38 @@ type RelatorioASG = {
   indicadores: IndicadorASG[];
 };
 
-type ResumoASGConsolidado = {
-  indice_risco: number;
-  nivel: 'baixo' | 'medio' | 'alto';
-  desmatamento_relativo?: number | null;
-};
-
-type AdminFonteStatus = { status: 'concluido' | 'updating' | 'erro'; progresso: number };
-type AdminFonteCheck = { id: string; fonte: string; total_local: number; total_remoto: number; ha_novos_dados: boolean };
-
 type InpeFeature = {
   id: number;
   geometria?: { type: string; coordinates: unknown };
   [key: string]: unknown;
 };
 
+type FonteId = 'sicar' | 'prodes' | 'deter' | 'queimadas' | 'ucs' | 'tis' | 'assentamentos' | 'quilombolas';
+
+type FonteAtualizacao = {
+  id: FonteId;
+  nome: string;
+  status: 'checking' | 'up-to-date' | 'update-available' | 'updating' | 'error';
+  ultima_atualizacao?: string;
+  total_registros?: number;
+  progresso?: number;
+};
+
+const FONTES_INICIAIS: FonteAtualizacao[] = [
+  { id: 'sicar', nome: 'SICAR', status: 'checking' },
+  { id: 'prodes', nome: 'PRODES', status: 'checking' },
+  { id: 'deter', nome: 'DETER', status: 'checking' },
+  { id: 'queimadas', nome: 'Queimadas', status: 'checking' },
+  { id: 'ucs', nome: 'Unidades de Conservação', status: 'checking' },
+  { id: 'tis', nome: 'Terras Indígenas', status: 'checking' },
+  { id: 'assentamentos', nome: 'Assentamentos', status: 'checking' },
+  { id: 'quilombolas', nome: 'Quilombolas', status: 'checking' },
+];
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const THEME_KEY = 'stratos-theme';
 const HEALTH_URL = '/gerenciamento_banco/health';
-const SP_CENTER: [number, number] = [-22.5, -48.5];
-const SP_ZOOM = 7;
-const TOAST_DURATION = 5000;
 
 // ─── Toast Icons ─────────────────────────────────────────────────────────────
 
@@ -324,6 +341,7 @@ function parseCoordinates(input: string): [number, number] | null {
 
 export default function App() {
   const [rightPanel, setRightPanel] = useState<'both' | 'report-only' | 'chat-only'>('both');
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadSettings);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
@@ -361,17 +379,6 @@ export default function App() {
   const propriedadeRef = useRef<PropriedadeBackend | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  // Admin panel state
-  const [adminOpen, setAdminOpen] = useState(false);
-  const [adminToken, setAdminToken] = useState<string | null>(null);
-  const [adminUser, setAdminUser] = useState('');
-  const [adminPass, setAdminPass] = useState('');
-  const [adminLogging, setAdminLogging] = useState(false);
-  const [adminStatus, setAdminStatus] = useState<Record<string, AdminFonteStatus> | null>(null);
-  const [adminVerificacao, setAdminVerificacao] = useState<AdminFonteCheck[] | null>(null);
-  const [adminChecking, setAdminChecking] = useState(false);
-  const [adminUpdating, setAdminUpdating] = useState<Record<string, boolean>>({});
-
   const menuRef = useRef<HTMLDivElement>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -389,6 +396,16 @@ export default function App() {
   const propriedadesActiveRef = useRef(false);
   const carregarPropriedadesRef = useRef<(() => Promise<void>) | null>(null);
 
+  // Auth & Admin States
+  const [authUser, setAuthUser] = useState('');
+  const [authPass, setAuthPass] = useState('');
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [adminTab, setAdminTab] = useState<'ingestao' | 'settings'>('ingestao');
+  const [tempSettings, setTempSettings] = useState<AppSettings>(appSettings);
+  const [fontesAdmin, setFontesAdmin] = useState<FonteAtualizacao[]>(FONTES_INICIAIS);
+
   type LayerId = 'prodes' | 'deter' | 'queimadas' | 'uc' | 'ti' | 'assentamento' | 'quilombola' | 'propriedades';
   const _initLayers: Record<LayerId, boolean> = {
     prodes: false, deter: false, queimadas: false,
@@ -399,6 +416,11 @@ export default function App() {
   const layerLoadingRef = useRef<Record<LayerId, boolean>>({ ..._initLayers });
   const [, forceLayerLoadingRender] = useState(0);
 
+  // Reset temp settings when opening the modal
+  useEffect(() => {
+    if (isModalOpen) setTempSettings(appSettings);
+  }, [isModalOpen, appSettings]);
+
   // Toast helpers
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -407,8 +429,8 @@ export default function App() {
   const addToast = useCallback((type: ToastType, title: string, message?: string) => {
     const id = Date.now() + Math.random();
     setToasts((prev) => [...prev.slice(-2), { id, type, title, message }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_DURATION);
-  }, []);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), appSettings.toastDurationMs);
+  }, [appSettings.toastDurationMs]);
 
   const toggleRightPanel = useCallback((which: 'report' | 'chat') => {
     setRightPanel((prev) => {
@@ -476,7 +498,11 @@ export default function App() {
   // Mapa
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
-    const map = L.map(mapContainerRef.current, { center: SP_CENTER, zoom: SP_ZOOM, zoomControl: false });
+    const map = L.map(mapContainerRef.current, { 
+      center: [appSettings.mapCenterLat, appSettings.mapCenterLng], 
+      zoom: appSettings.mapZoom, 
+      zoomControl: false 
+    });
     mapRef.current = map;
     tileLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap'
@@ -577,11 +603,11 @@ export default function App() {
       } catch { /* silently ignore */ }
     })();
 
-    // Focos — ST_DWithin 10 km da propriedade (amarelo)
+    // Focos — ST_DWithin usando raio dinâmico via Settings
     void (async () => {
       try {
         const r = await fetch(
-          `/gerenciamento_banco/banco/foco-queimada/por-propriedade/${encodeURIComponent(codImovel)}?buffer_m=10000`
+          `/gerenciamento_banco/banco/foco-queimada/por-propriedade/${encodeURIComponent(codImovel)}?buffer_m=${appSettings.queimadasBufferM}`
         );
         if (!r.ok) return;
         const list = await r.json() as InpeFeature[];
@@ -600,10 +626,10 @@ export default function App() {
           ).addTo(layer);
         }
         setInpeStats((s) => ({ ...(s ?? { prodes: 0, prodes_area_ha: 0, deter: 0, focos: 0 }), focos: list.length }));
-        if (list.length > 0) addToast('warning', `Queimadas: ${list.length} foco(s) (raio 10 km)`, 'Detectados 2016–2025');
+        if (list.length > 0) addToast('warning', `Queimadas: ${list.length} foco(s) (raio ${appSettings.queimadasBufferM/1000} km)`, 'Detectados 2016–2025');
       } catch { /* silently ignore */ }
     })();
-  }, [addToast]);
+  }, [addToast, appSettings.queimadasBufferM]);
 
   const carregarCamada = useCallback(async (id: LayerId) => {
     const layerMap: Partial<Record<LayerId, React.MutableRefObject<L.LayerGroup | null>>> = {
@@ -620,7 +646,7 @@ export default function App() {
     const anoParam = filtroAno ? `&ano=${filtroAno}` : '';
     const configs: Record<LayerId, { url: string; render: (f: InpeFeature, layer: L.LayerGroup) => void }> = {
       prodes: {
-        url: `/gerenciamento_banco/banco/desmatamento-prodes?uf=SP&limit=1000${anoParam}`,
+        url: `/gerenciamento_banco/banco/desmatamento-prodes?uf=SP&limit=${appSettings.prodesLimit}${anoParam}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -629,7 +655,7 @@ export default function App() {
         },
       },
       deter: {
-        url: `/gerenciamento_banco/banco/alerta-deter?uf=SP&limit=1000${anoParam}`,
+        url: `/gerenciamento_banco/banco/alerta-deter?uf=SP&limit=${appSettings.deterLimit}${anoParam}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -638,7 +664,7 @@ export default function App() {
         },
       },
       queimadas: {
-        url: '/gerenciamento_banco/banco/foco-queimada?estado=SP&limit=1000',
+        url: `/gerenciamento_banco/banco/foco-queimada?estado=SP&limit=${appSettings.queimadasLimit}`,
         render: (f, l) => {
           const lat = f['latitude'] as number | undefined;
           const lon = f['longitude'] as number | undefined;
@@ -648,7 +674,7 @@ export default function App() {
         },
       },
       uc: {
-        url: '/gerenciamento_banco/banco/unidade-conservacao?uf=SP&limit=500',
+        url: `/gerenciamento_banco/banco/unidade-conservacao?uf=SP&limit=${appSettings.areasProtegidasLimit}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -657,7 +683,7 @@ export default function App() {
         },
       },
       ti: {
-        url: '/gerenciamento_banco/banco/terra-indigena?uf=SP&limit=500',
+        url: `/gerenciamento_banco/banco/terra-indigena?uf=SP&limit=${appSettings.areasProtegidasLimit}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -666,7 +692,7 @@ export default function App() {
         },
       },
       assentamento: {
-        url: '/gerenciamento_banco/banco/assentamento?uf=SP&limit=500',
+        url: `/gerenciamento_banco/banco/assentamento?uf=SP&limit=${appSettings.areasProtegidasLimit}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -675,7 +701,7 @@ export default function App() {
         },
       },
       quilombola: {
-        url: '/gerenciamento_banco/banco/quilombola?uf=SP&limit=500',
+        url: `/gerenciamento_banco/banco/quilombola?uf=SP&limit=${appSettings.areasProtegidasLimit}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -694,7 +720,7 @@ export default function App() {
       layerLoadingRef.current[id] = false;
       forceLayerLoadingRender((v) => v + 1);
     }
-  }, [filtroAno]);
+  }, [filtroAno, appSettings]);
 
   const carregarPropriedadesViewport = useCallback(async () => {
     const map = mapRef.current;
@@ -819,7 +845,6 @@ export default function App() {
     setPropriedade(null);
     setAnaliseASG(null);
     setRelatorioASG(null);
-    setResumoASG(null);
     setInpeStats(null);
     setSobreposicaoProdes(null);
     setAreasProtegidasStats(null);
@@ -861,7 +886,7 @@ export default function App() {
         if (prop.municipio && prop.uf) {
           void (async () => {
             try {
-              const params = new URLSearchParams({ uf: prop.uf!, municipio: prop.municipio!, limit: '200' });
+              const params = new URLSearchParams({ uf: prop.uf!, municipio: prop.municipio!, limit: appSettings.vizinhosLimit.toString() });
               const nr = await fetch(`/gerenciamento_banco/banco/propriedades?${params}`);
               if (!nr.ok) return;
               const neighbors = await nr.json() as PropriedadeBackend[];
@@ -974,7 +999,6 @@ export default function App() {
     const msg = (overrideMsg ?? chatInput).trim();
     if (!msg || chatSending) return;
 
-    // desativa camadas ativadas pelo chat anterior
     for (const lid of chatActivatedLayersRef.current) {
       if (layerVisibleRef.current[lid]) void toggleCamada(lid);
     }
@@ -1112,71 +1136,6 @@ export default function App() {
       setResumoASG(null); setInpeStats(null); setAreasProtegidasStats(null);
     }
   };
-
-  // Admin handlers
-  const handleAdminLogin = async () => {
-    if (adminLogging) return;
-    setAdminLogging(true);
-    try {
-      const resp = await fetch('/gerenciamento_banco/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: adminUser, password: adminPass }),
-      });
-      if (!resp.ok) throw new Error('Usuário ou senha inválidos');
-      const data = await resp.json() as { token: string };
-      setAdminToken(data.token);
-      setAdminUser('');
-      setAdminPass('');
-      void handleAdminRefresh(data.token);
-    } catch (err) {
-      addToast('error', 'Falha no login admin', err instanceof Error ? err.message : 'Erro');
-    } finally {
-      setAdminLogging(false);
-    }
-  };
-
-  const handleAdminRefresh = async (token?: string) => {
-    const t = token ?? adminToken;
-    if (!t) return;
-    setAdminChecking(true);
-    try {
-      const headers = { Authorization: `Bearer ${t}` };
-      const [statusResp, checkResp] = await Promise.all([
-        fetch('/gerenciamento_banco/admin/status', { headers }),
-        fetch('/gerenciamento_banco/admin/verificar-tudo', { headers }),
-      ]);
-      if (statusResp.ok) setAdminStatus(await statusResp.json() as Record<string, AdminFonteStatus>);
-      if (checkResp.ok) setAdminVerificacao(await checkResp.json() as AdminFonteCheck[]);
-    } catch { /* silently ignore */ } finally {
-      setAdminChecking(false);
-    }
-  };
-
-  const handleAdminAtualizar = async (fonteId: string) => {
-    if (!adminToken || adminUpdating[fonteId]) return;
-    setAdminUpdating(prev => ({ ...prev, [fonteId]: true }));
-    try {
-      const resp = await fetch(`/gerenciamento_banco/admin/atualizar/${fonteId}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      const data = await resp.json() as { message?: string; error?: string };
-      if (data.error) addToast('error', `Erro ao atualizar ${fonteId}`, data.error);
-      else addToast('success', `Ingestão disparada: ${fonteId}`, data.message ?? 'Processo iniciado');
-      void handleAdminRefresh();
-    } catch (err) {
-      addToast('error', 'Falha na atualização', err instanceof Error ? err.message : 'Erro');
-    } finally {
-      setAdminUpdating(prev => ({ ...prev, [fonteId]: false }));
-    }
-  };
-
-  const FONTE_LABELS: Record<string, string> = {
-    sicar: 'SICAR', prodes: 'PRODES', deter: 'DETER', queimadas: 'Queimadas',
-    ucs: 'Unid. Conservação', tis: 'Terras Indígenas', assentamentos: 'Assentamentos', quilombolas: 'Quilombolas',
-  };
-
   const asgRows = analiseASG ? [
     { eixo: 'Ambiental', indicador: 'Desmat. PRODES', valor: analiseASG.area_desmatada_ha != null ? `${analiseASG.area_desmatada_ha} ha` : '—' },
     { eixo: 'Ambiental', indicador: 'Déficit APP',    valor: analiseASG.deficit_app_ha != null ? `${analiseASG.deficit_app_ha} ha` : '—' },
@@ -1185,6 +1144,124 @@ export default function App() {
     { eixo: 'Social',    indicador: 'TI',             valor: analiseASG.sobreposicao_ti ?? '—' },
     { eixo: 'Governança', indicador: 'CAR',           valor: propriedade?.status_imovel ?? '—' },
   ] : [];
+
+// ── Login ──
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authUser, password: authPass })
+      });
+
+      if (!res.ok) throw new Error('Usuário ou senha inválidos');
+      
+      const data = await res.json() as { token: string };
+      setAuthToken(data.token);
+      setIsLoggedIn(true);
+      setAuthUser('');
+      setAuthPass('');
+      addToast('success', 'Acesso liberado', 'Bem-vindo ao painel de administração.');
+    } catch (err) {
+      addToast('error', 'Acesso negado', err instanceof Error ? err.message : 'Erro ao conectar.');
+    }
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setAuthToken(null);
+    setIsModalOpen(false);
+  };
+
+  // ── Modal Admin ──
+  useEffect(() => {
+    if (!isModalOpen || !authToken || adminTab !== 'ingestao') return;
+
+    setFontesAdmin(FONTES_INICIAIS);
+    
+    FONTES_INICIAIS.forEach(async (fonte) => {
+      try {
+        const res = await fetch(`/admin/verificar-atualizacao/${fonte.id}`, {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        
+        if (!res.ok) throw new Error('Falha na verificação');
+        const data = await res.json() as { ha_novos_dados: boolean; total_local: number };
+        
+        setFontesAdmin((prev) => prev.map((f) => 
+          f.id === fonte.id ? { 
+            ...f, 
+            status: data.ha_novos_dados ? 'update-available' : 'up-to-date',
+            total_registros: data.total_local
+          } : f
+        ));
+      } catch {
+        setFontesAdmin((prev) => prev.map((f) => f.id === fonte.id ? { ...f, status: 'error' } : f));
+      }
+    });
+  }, [isModalOpen, authToken, adminTab]);
+
+  const startUpdate = async (fonteId: FonteId) => {
+    if (!authToken) return;
+    setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'updating', progresso: 0 } : f));
+    
+    try {
+      const resStart = await fetch(`/admin/atualizar/${fonteId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (!resStart.ok) throw new Error('Falha ao iniciar ingestão');
+      const poll = async () => {
+        try {
+          const res = await fetch('/admin/status', {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+          });
+          
+          if (!res.ok) throw new Error('Erro no polling');
+          const statusDict = await res.json() as Record<string, any>;
+          const fonteStatus = statusDict[fonteId]; 
+          const progresso = fonteStatus?.progresso ?? 0;
+          const statusAtual = fonteStatus?.status;
+
+          setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, progresso: progresso } : f));
+
+          if (statusAtual === 'concluido') {
+            setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'up-to-date', progresso: 100 } : f));
+            addToast('success', 'Atualização Concluída', `A fonte ${fonteId.toUpperCase()} foi atualizada com sucesso.`);
+          } else if (statusAtual === 'erro' || statusAtual === 'Indisponível') {
+            setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'error' } : f));
+            addToast('error', 'Erro na Ingestão', `Falha ao atualizar ${fonteId.toUpperCase()}.`);
+          } else {
+            setTimeout(poll, 3000);
+          }
+        } catch {
+          setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'error' } : f));
+        }
+      };
+      setTimeout(poll, 3000);
+
+    } catch (err) {
+      setFontesAdmin((prev) => prev.map((f) => f.id === fonteId ? { ...f, status: 'error' } : f));
+      addToast('error', 'Erro', 'Não foi possível iniciar a atualização.');
+    }
+  };
+
+  // Admin Settings Handlers
+  const handleSettingsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setTempSettings((prev) => ({ ...prev, [name]: Number(value) }));
+  };
+
+  const handleSaveSettings = () => {
+    saveSettings(tempSettings);
+    setAppSettings(tempSettings);
+    addToast('success', 'Configurações Salvas', 'Os novos parâmetros já estão em vigor.');
+  };
+
+  const handleRestoreSettings = () => {
+    setTempSettings(DEFAULT_SETTINGS);
+  };
 
   return (
     <>
@@ -1197,31 +1274,62 @@ export default function App() {
             <span className="brand-title">Stratos</span>
           </div>
 
-          <div className="topbar-actions" ref={menuRef}>
-            <button type="button" className="theme-gear admin-btn" onClick={() => setAdminOpen(true)} aria-label="Painel Admin" title="Painel Admin">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
-            </button>
-            <button type="button" className="theme-gear" onClick={() => setIsThemeMenuOpen((s) => !s)} aria-label="Tema">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.63l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
-              </svg>
-            </button>
-            {isThemeMenuOpen && (
-              <div className="theme-popup" role="dialog">
-                <div className="theme-switch-row">
-                  <button type="button" role="switch" aria-checked={theme === 'dark'}
-                    className={`theme-switch ${theme === 'dark' ? 'is-dark' : ''}`}
-                    onClick={() => setTheme((t) => t === 'light' ? 'dark' : 'light')}>
-                    <span className="theme-switch-icon" aria-hidden="true">
-                      {theme === 'dark'
-                        ? <svg viewBox="0 0 24 24"><path d="M12.1 2.2a1 1 0 0 0-1.1 1.2 8 8 0 0 1-8.4 9.8 1 1 0 0 0-.8 1.6A10 10 0 1 0 12.1 2.2Z" /></svg>
-                        : <svg viewBox="0 0 24 24"><path d="M12 4.2a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0V5.2a1 1 0 0 1 1-1Zm0 12.5a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0v-1.1a1 1 0 0 1 1-1Zm7.8-5.7a1 1 0 0 1 1 1 1 1 0 0 1-1 1h-1.1a1 1 0 1 1 0-2h1.1ZM6.3 11a1 1 0 1 1 0 2H5.2a1 1 0 1 1 0-2h1.1Zm9.3-4.9a1 1 0 0 1 1.4 0l.8.8a1 1 0 1 1-1.4 1.4l-.8-.8a1 1 0 0 1 0-1.4ZM7.2 14.6a1 1 0 0 1 1.4 0 1 1 0 0 1 0 1.4l-.8.8a1 1 0 0 1-1.4-1.4l.8-.8Zm9.2 2a1 1 0 0 1-1.4 0l-.8-.8a1 1 0 1 1 1.4-1.4l.8.8a1 1 0 0 1 0 1.4ZM8.6 8.2a1 1 0 1 1-1.4-1.4l.8-.8A1 1 0 1 1 9.4 7.4l-.8.8ZM12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6Z" /></svg>}
-                    </span>
-                    <span className="theme-switch-thumb" />
-                  </button>
-                </div>
+          <div className="topbar-right">
+            {isLoggedIn ? (
+              <div className="topbar-auth">
+                <button type="button" className="auth-button" onClick={() => { setAdminTab('ingestao'); setIsModalOpen(true); }}>
+                  Painel Admin
+                </button>
+                <button type="button" className="auth-button" style={{ background: 'transparent', border: '2px solid var(--control-line)', color: 'var(--control-line)' }} onClick={handleLogout}>
+                  Sair
+                </button>
               </div>
+            ) : (
+              <form className="topbar-auth" onSubmit={handleLogin}>
+                <input 
+                  type="text" 
+                  placeholder="Usuário" 
+                  className="auth-input" 
+                  value={authUser}
+                  onChange={(e) => setAuthUser(e.target.value)}
+                />
+                <input 
+                  type="password" 
+                  placeholder="Senha" 
+                  className="auth-input" 
+                  value={authPass}
+                  onChange={(e) => setAuthPass(e.target.value)}
+                />
+                <button type="submit" className="auth-button">
+                  Entrar
+                </button>
+              </form>
             )}
+
+            {/* ── Menu de Tema ── */}
+            <div className="topbar-actions" ref={menuRef}>
+              <button type="button" className="theme-gear" onClick={() => setIsThemeMenuOpen((s) => !s)} aria-label="Tema">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.63l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
+                </svg>
+              </button>
+              {isThemeMenuOpen && (
+                <div className="theme-popup" role="dialog">
+                  <div className="theme-switch-row">
+                    <button type="button" role="switch" aria-checked={theme === 'dark'}
+                      className={`theme-switch ${theme === 'dark' ? 'is-dark' : ''}`}
+                      onClick={() => setTheme((t) => t === 'light' ? 'dark' : 'light')}>
+                      <span className="theme-switch-icon" aria-hidden="true">
+                        {theme === 'dark'
+                          ? <svg viewBox="0 0 24 24"><path d="M12.1 2.2a1 1 0 0 0-1.1 1.2 8 8 0 0 1-8.4 9.8 1 1 0 0 0-.8 1.6A10 10 0 1 0 12.1 2.2Z" /></svg>
+                          : <svg viewBox="0 0 24 24"><path d="M12 4.2a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0V5.2a1 1 0 0 1 1-1Zm0 12.5a1 1 0 0 1 1 1v1.1a1 1 0 1 1-2 0v-1.1a1 1 0 0 1 1-1Zm7.8-5.7a1 1 0 0 1 1 1 1 1 0 0 1-1 1h-1.1a1 1 0 1 1 0-2h1.1ZM6.3 11a1 1 0 1 1 0 2H5.2a1 1 0 1 1 0-2h1.1Zm9.3-4.9a1 1 0 0 1 1.4 0l.8.8a1 1 0 1 1-1.4 1.4l-.8-.8a1 1 0 0 1 0-1.4ZM7.2 14.6a1 1 0 0 1 1.4 0 1 1 0 0 1 0 1.4l-.8.8a1 1 0 0 1-1.4-1.4l.8-.8Zm9.2 2a1 1 0 0 1-1.4 0l-.8-.8a1 1 0 1 1 1.4-1.4l.8.8a1 1 0 0 1 0 1.4ZM8.6 8.2a1 1 0 1 1-1.4-1.4l.8-.8A1 1 0 1 1 9.4 7.4l-.8.8ZM12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6Z" /></svg>}
+                      </span>
+                      <span className="theme-switch-thumb" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1583,7 +1691,7 @@ export default function App() {
                         disabled={chatSending}
                       />
                       <button type="button" onClick={() => void handleSendChat()} disabled={!chatInput.trim() || chatSending}>
-                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+                        <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16"><path fill="currentColor" d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
                       </button>
                     </>
                   )}
@@ -1592,114 +1700,130 @@ export default function App() {
             </div>
           </aside>
         </section>
-      </main>
 
-      {adminOpen && (
-        <div className="admin-overlay" onClick={(e) => { if (e.target === e.currentTarget) setAdminOpen(false); }}>
-          <div className="admin-modal">
-            <div className="admin-modal-header">
-              <h2>Painel Admin</h2>
-              <button className="admin-close-btn" onClick={() => setAdminOpen(false)} aria-label="Fechar">
-                <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeWidth="2"/></svg>
-              </button>
-            </div>
-
-            {!adminToken ? (
-              <div className="admin-login-form">
-                <p className="admin-login-desc">Acesso restrito. Insira as credenciais de administrador.</p>
-                <input
-                  type="text"
-                  placeholder="Usuário"
-                  value={adminUser}
-                  onChange={(e) => setAdminUser(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void handleAdminLogin(); }}
-                  autoComplete="username"
-                />
-                <input
-                  type="password"
-                  placeholder="Senha"
-                  value={adminPass}
-                  onChange={(e) => setAdminPass(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void handleAdminLogin(); }}
-                  autoComplete="current-password"
-                />
-                <button
-                  className="admin-action-btn admin-action-btn--primary"
-                  onClick={() => void handleAdminLogin()}
-                  disabled={adminLogging || !adminUser || !adminPass}
+        {/* ── Admin Modal ── */}
+        {isModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
+          <div className="modal-shell shell" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <div className="modal-tabs">
+                <button 
+                  className={`modal-tab ${adminTab === 'ingestao' ? 'active' : ''}`} 
+                  onClick={() => setAdminTab('ingestao')}
                 >
-                  {adminLogging ? 'Autenticando...' : 'Entrar'}
+                  Gerenciamento de Dados
+                </button>
+                <button 
+                  className={`modal-tab ${adminTab === 'settings' ? 'active' : ''}`} 
+                  onClick={() => setAdminTab('settings')}
+                >
+                  Configurações Gerais
                 </button>
               </div>
-            ) : (
-              <div className="admin-dashboard">
-                <div className="admin-dash-toolbar">
-                  <button
-                    className="admin-action-btn admin-action-btn--secondary"
-                    onClick={() => void handleAdminRefresh()}
-                    disabled={adminChecking}
-                  >
-                    {adminChecking ? 'Verificando...' : 'Verificar Atualizações'}
-                  </button>
-                  <button
-                    className="admin-action-btn admin-action-btn--ghost"
-                    onClick={() => { setAdminToken(null); setAdminStatus(null); setAdminVerificacao(null); }}
-                  >
-                    Sair
-                  </button>
-                </div>
-
-                <div className="admin-fontes-list">
-                  {Object.entries(adminStatus ?? {}).map(([id, st]) => {
-                    const check = adminVerificacao?.find(c => c.id === id);
-                    const label = FONTE_LABELS[id] ?? id;
-                    const isUpdating = adminUpdating[id] ?? false;
-                    return (
-                      <div key={id} className="admin-fonte-row">
-                        <div className="admin-fonte-info">
-                          <span className={`admin-fonte-dot admin-fonte-dot--${st.status}`} />
-                          <span className="admin-fonte-label">{label}</span>
-                          {check && (
-                            <span className="admin-fonte-counts">
-                              {check.total_local.toLocaleString('pt-BR')} local
-                              {check.ha_novos_dados && (
-                                <span className="admin-fonte-novos"> · {check.total_remoto.toLocaleString('pt-BR')} remoto</span>
-                              )}
-                            </span>
-                          )}
-                        </div>
-                        <div className="admin-fonte-actions">
-                          {check?.ha_novos_dados && (
-                            <span className="admin-fonte-badge">Novo</span>
-                          )}
-                          {st.status === 'updating' || isUpdating ? (
-                            <span className="admin-fonte-status admin-fonte-status--updating">Atualizando...</span>
-                          ) : st.status === 'concluido' && !check?.ha_novos_dados ? (
-                            <span className="admin-fonte-status admin-fonte-status--ok">Atualizado</span>
-                          ) : (
-                            <button
-                              className="admin-action-btn admin-action-btn--small"
-                              onClick={() => void handleAdminAtualizar(id)}
-                            >
-                              Atualizar
-                            </button>
-                          )}
-                        </div>
+              <button className="modal-close" onClick={() => setIsModalOpen(false)}>
+                <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" strokeWidth="2" stroke="currentColor" strokeLinecap="round" /></svg>
+              </button>
+            </header>
+            
+            <div className="modal-body">
+              {adminTab === 'ingestao' && (
+                fontesAdmin.map((fonte) => (
+                  <div key={fonte.id} className="admin-fonte-row">
+                    <div className="admin-fonte-left">
+                      <strong className="admin-fonte-nome">{fonte.nome}</strong>
+                      <div className="admin-fonte-meta">
+                        {fonte.ultima_atualizacao && <span>Última: {fonte.ultima_atualizacao}</span>}
+                        {fonte.total_registros != null && <span>Registros: {fonte.total_registros.toLocaleString('pt-BR')}</span>}
                       </div>
-                    );
-                  })}
-                  {!adminStatus && !adminChecking && (
-                    <p className="admin-empty-msg">Clique em "Verificar Atualizações" para ver o status dos bancos.</p>
-                  )}
-                  {adminChecking && (
-                    <p className="admin-empty-msg">Consultando serviços...</p>
-                  )}
+                    </div>
+                    <div className="admin-fonte-right">
+                      <div className="admin-fonte-status">
+                        {fonte.status === 'checking' && <span className="admin-badge badge-checking">Verificando...</span>}
+                        {fonte.status === 'up-to-date' && <span className="admin-badge badge-ok">Em dia</span>}
+                        {fonte.status === 'update-available' && <span className="admin-badge badge-new">Nova Atualização</span>}
+                        {fonte.status === 'updating' && <span className="admin-badge badge-updating">Atualizando...</span>}
+                        {fonte.status === 'error' && <span className="admin-badge badge-error">Erro de conexão</span>}
+                      </div>
+
+                      <button 
+                        className="auth-button" 
+                        disabled={fonte.status !== 'update-available'}
+                        onClick={() => void startUpdate(fonte.id)}
+                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+                      >
+                        {fonte.status === 'updating' ? 'Ingerindo...' : 'Atualizar'}
+                      </button>
+
+                      {fonte.status === 'updating' && (
+                        <div className="admin-progress-bar">
+                          <div className="admin-progress-fill" style={{ width: `${fonte.progresso ?? 0}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+
+              {adminTab === 'settings' && (
+                <div className="admin-settings-form">
+                  <div className="settings-grid">
+                    <div className="settings-field">
+                      <label>Raio para focos de queimada (metros)</label>
+                      <input type="number" name="queimadasBufferM" value={tempSettings.queimadasBufferM} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Máx. PRODES no mapa (polígonos)</label>
+                      <input type="number" name="prodesLimit" value={tempSettings.prodesLimit} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Máx. DETER no mapa (alertas)</label>
+                      <input type="number" name="deterLimit" value={tempSettings.deterLimit} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Máx. Queimadas no mapa (focos)</label>
+                      <input type="number" name="queimadasLimit" value={tempSettings.queimadasLimit} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Máx. Áreas Protegidas (UC/TI/etc)</label>
+                      <input type="number" name="areasProtegidasLimit" value={tempSettings.areasProtegidasLimit} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Máx. propriedades vizinhas</label>
+                      <input type="number" name="vizinhosLimit" value={tempSettings.vizinhosLimit} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Latitude Centro do Mapa</label>
+                      <input type="number" step="0.01" name="mapCenterLat" value={tempSettings.mapCenterLat} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Longitude Centro do Mapa</label>
+                      <input type="number" step="0.01" name="mapCenterLng" value={tempSettings.mapCenterLng} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Zoom Inicial do Mapa</label>
+                      <input type="number" name="mapZoom" value={tempSettings.mapZoom} onChange={handleSettingsChange} />
+                    </div>
+                    <div className="settings-field">
+                      <label>Duração do Toast (ms)</label>
+                      <input type="number" name="toastDurationMs" value={tempSettings.toastDurationMs} onChange={handleSettingsChange} />
+                    </div>
+                  </div>
+                  
+                  <div className="admin-settings-actions">
+                    <button type="button" className="auth-button restore-btn" onClick={handleRestoreSettings}>
+                      Restaurar Padrões
+                    </button>
+                    <button type="button" className="auth-button save-btn" onClick={handleSaveSettings}>
+                      Salvar Configurações
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
+      </main>
     </>
   );
 }
