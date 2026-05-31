@@ -345,6 +345,7 @@ export default function App() {
   const [tiCount, setTiCount] = useState<number | null>(null);
   const [assentamentoCount, setAssentamentoCount] = useState<number | null>(null);
   const [quilombolaCount, setQuilombolaCount] = useState<number | null>(null);
+  const [propriedadesCount, setPropriedadesCount] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatSending, setChatSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -384,11 +385,14 @@ export default function App() {
   const tiLayerRef = useRef<L.LayerGroup | null>(null);
   const assentamentoLayerRef = useRef<L.LayerGroup | null>(null);
   const quilombolaLayerRef = useRef<L.LayerGroup | null>(null);
+  const propriedadesLayerRef = useRef<L.LayerGroup | null>(null);
+  const propriedadesActiveRef = useRef(false);
+  const carregarPropriedadesRef = useRef<(() => Promise<void>) | null>(null);
 
-  type LayerId = 'prodes' | 'deter' | 'queimadas' | 'uc' | 'ti' | 'assentamento' | 'quilombola';
+  type LayerId = 'prodes' | 'deter' | 'queimadas' | 'uc' | 'ti' | 'assentamento' | 'quilombola' | 'propriedades';
   const _initLayers: Record<LayerId, boolean> = {
     prodes: false, deter: false, queimadas: false,
-    uc: false, ti: false, assentamento: false, quilombola: false,
+    uc: false, ti: false, assentamento: false, quilombola: false, propriedades: false,
   };
   const [layerVisible, setLayerVisible] = useState<Record<LayerId, boolean>>(_initLayers);
   const layerVisibleRef = useRef<Record<LayerId, boolean>>({ ..._initLayers });
@@ -443,6 +447,8 @@ export default function App() {
         if (typeof p['total_ti'] === 'number') setTiCount(p['total_ti']);
         if (typeof p['total_assentamento'] === 'number') setAssentamentoCount(p['total_assentamento']);
         if (typeof p['total_quilombola'] === 'number') setQuilombolaCount(p['total_quilombola']);
+        if (typeof p['total_sp'] === 'number') setPropriedadesCount(p['total_sp']);
+        else if (typeof p['total'] === 'number') setPropriedadesCount(p['total']);
       })
       .catch(() => {
         if (!active) return;
@@ -482,10 +488,16 @@ export default function App() {
     tiLayerRef.current = L.layerGroup().addTo(map);
     assentamentoLayerRef.current = L.layerGroup().addTo(map);
     quilombolaLayerRef.current = L.layerGroup().addTo(map);
+    propriedadesLayerRef.current = L.layerGroup().addTo(map);
     neighborsLayerRef.current = L.layerGroup().addTo(map);
     resultLayerRef.current = L.featureGroup().addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
-    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; ucLayerRef.current = null; tiLayerRef.current = null; assentamentoLayerRef.current = null; quilombolaLayerRef.current = null; };
+    map.on('moveend zoomend', () => {
+      if (propriedadesActiveRef.current && carregarPropriedadesRef.current) {
+        void carregarPropriedadesRef.current();
+      }
+    });
+    return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; ucLayerRef.current = null; tiLayerRef.current = null; assentamentoLayerRef.current = null; quilombolaLayerRef.current = null; propriedadesLayerRef.current = null; };
   }, []);
 
   // Tile ao mudar tema
@@ -594,11 +606,11 @@ export default function App() {
   }, [addToast]);
 
   const carregarCamada = useCallback(async (id: LayerId) => {
-    const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
+    const layerMap: Partial<Record<LayerId, React.MutableRefObject<L.LayerGroup | null>>> = {
       prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
       uc: ucLayerRef, ti: tiLayerRef, assentamento: assentamentoLayerRef, quilombola: quilombolaLayerRef,
     };
-    const layer = layerMap[id].current;
+    const layer = layerMap[id]?.current;
     if (!layer) return;
     if (layerLoadingRef.current[id]) return;
     layerLoadingRef.current[id] = true;
@@ -684,20 +696,81 @@ export default function App() {
     }
   }, [filtroAno]);
 
+  const carregarPropriedadesViewport = useCallback(async () => {
+    const map = mapRef.current;
+    const layer = propriedadesLayerRef.current;
+    if (!map || !layer || !propriedadesActiveRef.current) return;
+    if (layerLoadingRef.current['propriedades']) return;
+    layerLoadingRef.current['propriedades'] = true;
+    forceLayerLoadingRender((v) => v + 1);
+    layer.clearLayers();
+    const zoom = map.getZoom();
+    if (zoom < 11) {
+      layerLoadingRef.current['propriedades'] = false;
+      forceLayerLoadingRender((v) => v + 1);
+      return;
+    }
+    const b = map.getBounds();
+    const bbox = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
+    try {
+      const r = await fetch(`/gerenciamento_banco/banco/propriedades?bbox=${bbox}&limit=500`);
+      if (!r.ok || !propriedadesActiveRef.current) return;
+      const list = await r.json() as PropriedadeBackend[];
+      if (!propriedadesActiveRef.current) return;
+      layer.clearLayers();
+      for (const f of list) {
+        if (!f.geometria) continue;
+        const cod = f.cod_imovel;
+        const popupHtml = `<div style="display:flex;align-items:center;gap:8px;padding:2px 0;max-width:340px">
+          <span style="font-family:monospace;font-size:11px;word-break:break-all;flex:1">${cod}</span>
+          <button class="sicar-copy-btn" title="Copiar código" style="background:none;border:1px solid #aaa;border-radius:4px;cursor:pointer;padding:4px 6px;display:flex;align-items:center;flex-shrink:0">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>`;
+        const geoLayer = L.geoJSON(f.geometria as GeoJSON.Geometry, {
+          style: { color: '#0891b2', weight: 1, fillColor: '#22d3ee', fillOpacity: 0.15, dashArray: '4 3' }
+        }).bindPopup(popupHtml, { maxWidth: 400 });
+        geoLayer.on('popupopen', (e) => {
+          const popup = (e as L.PopupEvent).popup.getElement();
+          popup?.querySelector('.sicar-copy-btn')?.addEventListener('click', () => {
+            void navigator.clipboard.writeText(cod);
+            addToast('success', 'Código SICAR copiado!', cod);
+          });
+        });
+        geoLayer.addTo(layer);
+      }
+    } catch { /* ignore */ } finally {
+      layerLoadingRef.current['propriedades'] = false;
+      forceLayerLoadingRender((v) => v + 1);
+    }
+  }, [addToast]);
+
+  carregarPropriedadesRef.current = carregarPropriedadesViewport;
+
   const toggleCamada = useCallback(async (id: LayerId) => {
     const isOn = !layerVisibleRef.current[id];
     layerVisibleRef.current = { ...layerVisibleRef.current, [id]: isOn };
     setLayerVisible(prev => ({ ...prev, [id]: isOn }));
 
-    const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
+    if (id === 'propriedades') {
+      propriedadesActiveRef.current = isOn;
+      if (!isOn) { propriedadesLayerRef.current?.clearLayers(); return; }
+      await carregarPropriedadesViewport();
+      return;
+    }
+
+    const layerMap: Record<Exclude<LayerId, 'propriedades'>, React.MutableRefObject<L.LayerGroup | null>> = {
       prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
       uc: ucLayerRef, ti: tiLayerRef, assentamento: assentamentoLayerRef, quilombola: quilombolaLayerRef,
     };
-    const layer = layerMap[id].current;
+    const layer = layerMap[id as Exclude<LayerId, 'propriedades'>].current;
     if (!layer) return;
     if (!isOn) { layer.clearLayers(); return; }
     await carregarCamada(id);
-  }, [carregarCamada]);
+  }, [carregarCamada, carregarPropriedadesViewport]);
 
   const filtroAnoAnteriorRef = useRef<number | null>(null);
   useEffect(() => {
@@ -798,9 +871,28 @@ export default function App() {
               let count = 0;
               for (const n of neighbors) {
                 if (!n.geometria || n.cod_imovel === prop.cod_imovel) continue;
-                L.geoJSON(n.geometria as GeoJSON.Geometry, {
+                const cod = n.cod_imovel;
+                const popupHtml = `<div style="display:flex;align-items:center;gap:8px;padding:2px 0;max-width:340px">
+                  <span style="font-family:monospace;font-size:11px;word-break:break-all;flex:1">${cod}</span>
+                  <button class="sicar-copy-btn" title="Copiar código" style="background:none;border:1px solid #aaa;border-radius:4px;cursor:pointer;padding:4px 6px;display:flex;align-items:center;flex-shrink:0">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
+                </div>`;
+                const geoLayer = L.geoJSON(n.geometria as GeoJSON.Geometry, {
                   style: { color: '#5a8abf', weight: 1, fillColor: '#91c4e8', fillOpacity: 0.12, dashArray: '3 3' }
-                }).bindTooltip(n.cod_imovel, { sticky: true, opacity: 0.85 }).addTo(layer);
+                })
+                  .bindPopup(popupHtml, { maxWidth: 400 });
+                geoLayer.on('popupopen', (e) => {
+                  const popup = (e as L.PopupEvent).popup.getElement();
+                  popup?.querySelector('.sicar-copy-btn')?.addEventListener('click', () => {
+                    void navigator.clipboard.writeText(cod);
+                    addToast('success', 'Código SICAR copiado!', cod);
+                  });
+                });
+                geoLayer.addTo(layer);
                 count++;
               }
               if (count > 0) addToast('info', `${count} propriedades vizinhas`, `Município de ${prop.municipio}`);
@@ -1272,6 +1364,7 @@ export default function App() {
                 { id: 'ti',           label: 'TI',            color: '#7c3aed', count: tiCount,            unit: 'TIs' },
                 { id: 'assentamento', label: 'Assentamentos', color: '#b45309', count: assentamentoCount,  unit: 'ass.' },
                 { id: 'quilombola',   label: 'Quilombolas',   color: '#be185d', count: quilombolaCount,    unit: 'terr.' },
+                { id: 'propriedades', label: 'Prop. Rurais',  color: '#0891b2', count: propriedadesCount,  unit: 'prop.' },
               ] as { id: LayerId; label: string; color: string; count: number | null; unit: string }[]).map(({ id, label, color, count, unit }) => {
                 const on = layerVisible[id];
                 const loading = layerLoadingRef.current[id];
