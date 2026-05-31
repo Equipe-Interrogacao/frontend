@@ -174,6 +174,136 @@ function CarStatusBadge({ status }: { status: string }) {
   );
 }
 
+// ─── Chat text renderer ───────────────────────────────────────────────────────
+
+const _CHAT_COLORS: Array<[RegExp, string]> = [
+  [/\bPRODES\b/i,                               '#d97706'],
+  [/\bDETER\b/i,                                '#dc2626'],
+  [/\bqueimad|foco.*(calor|queimada)/i,          '#f59e0b'],
+  [/\bUC\b|unidade.*conserv/i,                  '#059669'],
+  [/\bTI\b|terra.*ind[ií]gen|ind[ií]gena/i,     '#7c3aed'],
+  [/\bassentamento/i,                            '#b45309'],
+  [/\bquilombola/i,                              '#be185d'],
+  [/\bbaixo\b/i,                                '#16a34a'],
+  [/\bmoderado\b|m[eé]dio\b/i,                  '#d97706'],
+  [/\balto\b/i,                                 '#dc2626'],
+];
+
+const _CAR_SPLIT_RE = /((?:[A-Z]{2}-[A-Za-z0-9]{7}-[A-Za-z0-9]+))/gi;
+
+function _chatColorFor(word: string): string | null {
+  for (const [re, color] of _CHAT_COLORS) {
+    if (re.test(word)) return color;
+  }
+  return null;
+}
+
+// SP-3549904-93C7761B1292455C8CEF330F14 → SP-3549904-93C776…F14
+function _shortCar(car: string): string {
+  const parts = car.split('-');
+  if (parts.length < 3) return car;
+  const hash = parts.slice(2).join('-');
+  if (hash.length <= 10) return car;
+  return `${parts[0]}-${parts[1]}-${hash.slice(0, 6)}…${hash.slice(-4)}`;
+}
+
+function renderChatText(text: string, onCarClick?: (car: string) => void): React.ReactNode[] {
+  const lines = text.split('\n');
+  return lines.flatMap((line, lineIdx) => {
+    const boldParts = line.split(/\*\*(.+?)\*\*/g);
+    const rendered = (
+      <span key={lineIdx * 2}>
+        {boldParts.map((seg, j) => {
+          if (j % 2 === 1) {
+            // bold — check if it's a bare CAR code (render as inline clickable)
+            if (onCarClick && /^[A-Z]{2}-[A-Za-z0-9]{7}-[A-Za-z0-9]+$/i.test(seg)) {
+              return (
+                <span key={j} className="chat-car-btn" role="button" tabIndex={0}
+                  onClick={() => onCarClick(seg.toUpperCase())}
+                  onKeyDown={(e) => e.key === 'Enter' && onCarClick(seg.toUpperCase())}>
+                  {seg.toUpperCase()}
+                </span>
+              );
+            }
+            return <strong key={j} style={{ color: _chatColorFor(seg) ?? undefined }}>{seg}</strong>;
+          }
+          if (!seg) return null;
+          // plain text — split on bare CAR codes too
+          const carParts = seg.split(_CAR_SPLIT_RE);
+          if (carParts.length === 1) return <span key={j}>{seg}</span>;
+          return carParts.map((part, k) =>
+            k % 2 === 1 && onCarClick
+              ? <span key={`${j}-${k}`} className="chat-car-btn" role="button" tabIndex={0}
+                  onClick={() => onCarClick(part.toUpperCase())}
+                  onKeyDown={(e) => e.key === 'Enter' && onCarClick(part.toUpperCase())}
+                  >{part.toUpperCase()}</span>
+              : part ? <span key={`${j}-${k}`}>{part}</span> : null
+          );
+        })}
+      </span>
+    );
+    return lineIdx < lines.length - 1
+      ? [rendered, <br key={lineIdx * 2 + 1} />]
+      : [rendered];
+  });
+}
+
+// ─── Chat suggestions ─────────────────────────────────────────────────────────
+
+function getSuggestions(
+  intencao: string | undefined,
+  hasProperty: boolean,
+  municipio?: string,
+): string[] {
+  const m = municipio;
+
+  // Com propriedade carregada — sugestões complementares específicas
+  if (hasProperty) {
+    const map: Record<string, string[]> = {
+      queimada:     ['Desmatamento PRODES', 'Alertas DETER', 'Relatório ASG'],
+      desmatamento: ['Queimadas', 'Alertas DETER', 'Relatório ASG'],
+      alerta:       ['Desmatamento PRODES', 'Queimadas', 'Relatório ASG'],
+      indigena:     ['Unidades de Conservação', 'Assentamentos', 'Relatório ASG'],
+      conservacao:  ['Terras Indígenas', 'Assentamentos', 'Relatório ASG'],
+      comunidades:  ['Terras Indígenas', 'Unidades de Conservação', 'Relatório ASG'],
+      relatorio:    ['Queimadas', 'Desmatamento PRODES', 'Terras Indígenas'],
+      governanca:   ['Relatório ASG', 'Dados fundiários', 'Queimadas'],
+      fundiario:    ['Relatório ASG', 'Queimadas', 'Desmatamento PRODES'],
+    };
+    return map[intencao ?? ''] ?? ['Relatório ASG', 'Queimadas', 'Desmatamento PRODES'];
+  }
+
+  // Com município no contexto — sugestões cruzadas no mesmo município
+  if (m) {
+    const cross: Record<string, string[]> = {
+      queimada:     [`Desmatamento em ${m}`, `Terras Indígenas em ${m}`, 'Cidades com mais queimadas'],
+      desmatamento: [`Queimadas em ${m}`, `Alertas DETER em ${m}`, 'Cidades com mais desmatamento'],
+      alerta:       [`Desmatamento em ${m}`, `Queimadas em ${m}`, 'Cidades com mais alertas'],
+      indigena:     [`UCs em ${m}`, `Assentamentos em ${m}`, `Queimadas em ${m}`],
+      conservacao:  [`Terras Indígenas em ${m}`, `Queimadas em ${m}`, `Desmatamento em ${m}`],
+      comunidades:  [`Terras Indígenas em ${m}`, `UCs em ${m}`, `Queimadas em ${m}`],
+      relatorio:    [`Queimadas em ${m}`, `Desmatamento em ${m}`, 'Cidades com mais focos'],
+      governanca:   [`Relatório ASG em ${m}`, `Queimadas em ${m}`],
+      fundiario:    [`Relatório ASG em ${m}`, `Queimadas em ${m}`],
+    };
+    return cross[intencao ?? ''] ?? [`Queimadas em ${m}`, `Desmatamento em ${m}`, 'Relatório ASG'];
+  }
+
+  // Sem contexto — sugestões gerais de exploração
+  const general: Record<string, string[]> = {
+    queimada:     ['Cidades com mais queimadas', 'Desmatamento em SP', 'Queimadas em Campinas'],
+    desmatamento: ['Cidades com mais desmatamento', 'Queimadas em SP', 'TI em SP'],
+    alerta:       ['Cidades com mais alertas DETER', 'Desmatamento em SP', 'Queimadas em SP'],
+    indigena:     ['TI em SP', 'UCs em SP', 'Cidades com mais desmatamento'],
+    conservacao:  ['UCs em SP', 'Terras indígenas em SP', 'Queimadas em SP'],
+    comunidades:  ['Assentamentos em SP', 'Queimadas em SP', 'Desmatamento em SP'],
+    relatorio:    ['Cidades com mais queimadas', 'Maior desmatamento SP', 'TI em SP'],
+    governanca:   ['Relatório ASG', 'Queimadas em SP'],
+    fundiario:    ['Relatório ASG', 'Queimadas em SP'],
+  };
+  return general[intencao ?? ''] ?? ['Cidades com mais queimadas', 'Maior desmatamento SP', 'Relatório ASG'];
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getInitialTheme(): ThemeMode {
@@ -193,6 +323,7 @@ function parseCoordinates(input: string): [number, number] | null {
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [rightPanel, setRightPanel] = useState<'both' | 'report-only' | 'chat-only'>('both');
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
@@ -217,9 +348,16 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [chatSending, setChatSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    { id: 1, role: 'incoming', text: 'Olá! Busque uma propriedade pelo código CAR para consultas ASG.' }
+    { id: 1, role: 'incoming', text: 'Olá! Pergunte sobre desmatamento, queimadas, terras indígenas, UCs, assentamentos ou envie coordenadas (ex: -23.5, -46.6). Para análise de uma propriedade específica, informe o código CAR.' }
+  ]);
+  const [chatSuggestions, setChatSuggestions] = useState<string[]>([
+    'Cidades com mais queimadas', 'Maior desmatamento SP', 'Relatório ASG',
   ]);
   const chatBodyRef = useRef<HTMLDivElement>(null);
+  const chatActivatedLayersRef = useRef<LayerId[]>([]);
+  const chatContextRef = useRef<{ municipio?: string; intencao?: string }>({});
+  const propriedadeViaChat = useRef<boolean>(false);
+  const propriedadeRef = useRef<PropriedadeBackend | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   // Admin panel state
@@ -237,7 +375,7 @@ export default function App() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
-  const resultLayerRef = useRef<L.LayerGroup | null>(null);
+  const resultLayerRef = useRef<L.FeatureGroup | null>(null);
   const neighborsLayerRef = useRef<L.LayerGroup | null>(null);
   const prodesLayerRef = useRef<L.LayerGroup | null>(null);
   const deterLayerRef = useRef<L.LayerGroup | null>(null);
@@ -248,14 +386,14 @@ export default function App() {
   const quilombolaLayerRef = useRef<L.LayerGroup | null>(null);
 
   type LayerId = 'prodes' | 'deter' | 'queimadas' | 'uc' | 'ti' | 'assentamento' | 'quilombola';
-  const [layerVisible, setLayerVisible] = useState<Record<LayerId, boolean>>({
+  const _initLayers: Record<LayerId, boolean> = {
     prodes: false, deter: false, queimadas: false,
     uc: false, ti: false, assentamento: false, quilombola: false,
-  });
-  const layerLoadingRef = useRef<Record<LayerId, boolean>>({
-    prodes: false, deter: false, queimadas: false,
-    uc: false, ti: false, assentamento: false, quilombola: false,
-  });
+  };
+  const [layerVisible, setLayerVisible] = useState<Record<LayerId, boolean>>(_initLayers);
+  const layerVisibleRef = useRef<Record<LayerId, boolean>>({ ..._initLayers });
+  const layerLoadingRef = useRef<Record<LayerId, boolean>>({ ..._initLayers });
+  const [, forceLayerLoadingRender] = useState(0);
 
   // Toast helpers
   const dismissToast = useCallback((id: number) => {
@@ -264,8 +402,15 @@ export default function App() {
 
   const addToast = useCallback((type: ToastType, title: string, message?: string) => {
     const id = Date.now() + Math.random();
-    setToasts((prev) => [...prev, { id, type, title, message }]);
+    setToasts((prev) => [...prev.slice(-2), { id, type, title, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_DURATION);
+  }, []);
+
+  const toggleRightPanel = useCallback((which: 'report' | 'chat') => {
+    setRightPanel((prev) => {
+      if (which === 'report') return prev === 'report-only' ? 'both' : 'report-only';
+      return prev === 'chat-only' ? 'both' : 'chat-only';
+    });
   }, []);
 
   // Favicon
@@ -338,7 +483,7 @@ export default function App() {
     assentamentoLayerRef.current = L.layerGroup().addTo(map);
     quilombolaLayerRef.current = L.layerGroup().addTo(map);
     neighborsLayerRef.current = L.layerGroup().addTo(map);
-    resultLayerRef.current = L.layerGroup().addTo(map);
+    resultLayerRef.current = L.featureGroup().addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     return () => { map.remove(); mapRef.current = null; tileLayerRef.current = null; resultLayerRef.current = null; neighborsLayerRef.current = null; prodesLayerRef.current = null; deterLayerRef.current = null; focosLayerRef.current = null; ucLayerRef.current = null; tiLayerRef.current = null; assentamentoLayerRef.current = null; quilombolaLayerRef.current = null; };
   }, []);
@@ -448,7 +593,6 @@ export default function App() {
     })();
   }, [addToast]);
 
-  // Carrega (ou recarrega) o conteúdo de uma camada sem alterar sua visibilidade
   const carregarCamada = useCallback(async (id: LayerId) => {
     const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
       prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
@@ -458,6 +602,7 @@ export default function App() {
     if (!layer) return;
     if (layerLoadingRef.current[id]) return;
     layerLoadingRef.current[id] = true;
+    forceLayerLoadingRender((v) => v + 1);
     layer.clearLayers();
 
     const anoParam = filtroAno ? `&ano=${filtroAno}` : '';
@@ -481,7 +626,7 @@ export default function App() {
         },
       },
       queimadas: {
-        url: '/gerenciamento_banco/banco/foco-queimada?estado=SP&limit=2000',
+        url: '/gerenciamento_banco/banco/foco-queimada?estado=SP&limit=1000',
         render: (f, l) => {
           const lat = f['latitude'] as number | undefined;
           const lon = f['longitude'] as number | undefined;
@@ -535,11 +680,13 @@ export default function App() {
       for (const f of list) configs[id].render(f, layer);
     } catch { /* silently ignore */ } finally {
       layerLoadingRef.current[id] = false;
+      forceLayerLoadingRender((v) => v + 1);
     }
   }, [filtroAno]);
 
   const toggleCamada = useCallback(async (id: LayerId) => {
-    const isOn = !layerVisible[id];
+    const isOn = !layerVisibleRef.current[id];
+    layerVisibleRef.current = { ...layerVisibleRef.current, [id]: isOn };
     setLayerVisible(prev => ({ ...prev, [id]: isOn }));
 
     const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
@@ -550,17 +697,16 @@ export default function App() {
     if (!layer) return;
     if (!isOn) { layer.clearLayers(); return; }
     await carregarCamada(id);
-  }, [layerVisible, carregarCamada]);
+  }, [carregarCamada]);
 
-  // Recarrega PRODES/DETER automaticamente quando o filtro de ano muda
   const filtroAnoAnteriorRef = useRef<number | null>(null);
   useEffect(() => {
     if (filtroAnoAnteriorRef.current === filtroAno) return;
     filtroAnoAnteriorRef.current = filtroAno;
     (['prodes', 'deter'] as LayerId[]).forEach((id) => {
-      if (layerVisible[id]) void carregarCamada(id);
+      if (layerVisibleRef.current[id]) void carregarCamada(id);
     });
-  }, [filtroAno, layerVisible, carregarCamada]);
+  }, [filtroAno, carregarCamada]);
 
   const carregarAreasProtegidas = useCallback(async (codImovel: string) => {
     setAreasProtegidasStats(null);
@@ -587,12 +733,10 @@ export default function App() {
     if (n_uc > 0) addToast('warning', `UC: ${n_uc} sobreposição(ões)`, result.uc.map(u => u.nome ?? u.cod_uc).join(', '));
   }, [addToast]);
 
-  // Busca
-  const handleSearch = async () => {
-    const query = searchValue.trim();
+  const carregarPropriedadePorCAR = useCallback(async (cod: string) => {
     const map = mapRef.current;
     const resultLayer = resultLayerRef.current;
-    if (!map || !resultLayer || searching) return;
+    if (!map || !resultLayer) return;
 
     resultLayer.clearLayers();
     neighborsLayerRef.current?.clearLayers();
@@ -606,37 +750,18 @@ export default function App() {
     setInpeStats(null);
     setSobreposicaoProdes(null);
     setAreasProtegidasStats(null);
-    if (!query) return;
-
-    // Coordenadas
-    const coords = parseCoordinates(query);
-    if (coords) {
-      const [lat, lng] = coords;
-      L.circleMarker([lat, lng], { radius: 8, color: '#1263a8', fillColor: '#41b0e4', fillOpacity: 0.9, weight: 2 })
-        .bindPopup(`${lat.toFixed(6)}, ${lng.toFixed(6)}`).addTo(resultLayer).openPopup();
-      map.flyTo([lat, lng], 14, { duration: 0.7 });
-      addToast('info', 'Coordenadas localizadas', `${lat.toFixed(6)}, ${lng.toFixed(6)}`);
-      return;
-    }
-
-    // CAR
-    const cod = query.toUpperCase();
-    setSearching(true);
-    addToast('info', 'Consultando...', `Buscando ${cod} no banco e no SICAR`);
+    propriedadeRef.current = null;
 
     try {
       const resp = await fetch(`/ingestao/propriedades/${encodeURIComponent(cod)}`);
-
       if (!resp.ok) {
-        if (resp.status === 404) {
-          addToast('error', 'Não encontrado', `"${cod}" não existe no banco nem no SICAR.`);
-        } else {
-          addToast('error', `Erro ${resp.status}`, 'Falha ao consultar o serviço de ingestão.');
-        }
+        if (resp.status === 404) addToast('error', 'Não encontrado', `"${cod}" não existe no banco nem no SICAR.`);
+        else addToast('error', `Erro ${resp.status}`, 'Falha ao consultar o serviço de ingestão.');
         return;
       }
 
       const prop = await resp.json() as PropriedadeBackend;
+      propriedadeRef.current = prop;
       setPropriedade(prop);
 
       if (prop.geometria) {
@@ -645,25 +770,21 @@ export default function App() {
         });
         const popupLines = [
           `<strong>CAR:</strong> ${prop.cod_imovel}`,
-          prop.status_imovel   ? `<strong>Situação:</strong> ${prop.status_imovel}`                            : null,
-          prop.condicao        ? `<strong>Condição:</strong> ${prop.condicao}`                                 : null,
-          prop.tipo_imovel     ? `<strong>Tipo:</strong> ${prop.tipo_imovel}`                                  : null,
-          prop.municipio       ? `<strong>Município:</strong> ${prop.municipio}${prop.uf ? `/${prop.uf}` : ''}` : null,
-          prop.cod_municipio_ibge ? `<strong>IBGE:</strong> ${prop.cod_municipio_ibge}`                        : null,
-          prop.area            ? `<strong>Área:</strong> ${prop.area.toFixed(2)} ha`                           : null,
-          prop.m_fiscal        ? `<strong>Módulo fiscal:</strong> ${prop.m_fiscal}`                            : null,
-          prop.dat_criacao     ? `<strong>Criado em:</strong> ${new Date(prop.dat_criacao).toLocaleDateString('pt-BR')}` : null,
+          prop.status_imovel     ? `<strong>Situação:</strong> ${prop.status_imovel}`                            : null,
+          prop.condicao          ? `<strong>Condição:</strong> ${prop.condicao}`                                 : null,
+          prop.tipo_imovel       ? `<strong>Tipo:</strong> ${prop.tipo_imovel}`                                  : null,
+          prop.municipio         ? `<strong>Município:</strong> ${prop.municipio}${prop.uf ? `/${prop.uf}` : ''}` : null,
+          prop.cod_municipio_ibge ? `<strong>IBGE:</strong> ${prop.cod_municipio_ibge}`                          : null,
+          prop.area              ? `<strong>Área:</strong> ${prop.area.toFixed(2)} ha`                           : null,
+          prop.m_fiscal          ? `<strong>Módulo fiscal:</strong> ${prop.m_fiscal}`                            : null,
+          prop.dat_criacao       ? `<strong>Criado em:</strong> ${new Date(prop.dat_criacao).toLocaleDateString('pt-BR')}` : null,
         ].filter(Boolean).join('<br/>');
         geoLayer.bindPopup(`<div style="font-size:0.8rem;line-height:1.6">${popupLines}</div>`, { maxWidth: 280 }).addTo(resultLayer);
         map.fitBounds(geoLayer.getBounds(), { padding: [40, 40] });
         addToast('success', 'Propriedade encontrada',
           `${prop.municipio ?? ''}${prop.uf ? `/${prop.uf}` : ''}${prop.area ? ` · ${prop.area.toFixed(1)} ha` : ''}`);
-
-        // Dados INPE espacialmente sobrepostos à propriedade (ST_Intersects / ST_DWithin)
         void carregarInpe(prop.cod_imovel);
         void carregarAreasProtegidas(prop.cod_imovel);
-
-        // Propriedades vizinhas (background layer)
         if (prop.municipio && prop.uf) {
           void (async () => {
             try {
@@ -690,7 +811,6 @@ export default function App() {
         addToast('warning', 'Propriedade sem geometria', 'Dados cadastrais encontrados, mas sem polígono no banco.');
       }
 
-      // Análise ASG (legado) + Relatório ASG (novo)
       void (async () => {
         try {
           const asgResp = await fetch(`/cruzamento_asg/asg/analises/${encodeURIComponent(cod)}`);
@@ -707,14 +827,45 @@ export default function App() {
         try {
           const consResp = await fetch(`/cruzamento_asg/relatorio/car/${encodeURIComponent(cod)}/asg`);
           if (consResp.ok) {
-            const data = await consResp.json() as { resumo_asg: ResumoASGConsolidado };
-            setResumoASG(data.resumo_asg);
+            const d = await consResp.json() as { resumo_asg: ResumoASGConsolidado };
+            setResumoASG(d.resumo_asg);
           }
         } catch { /* não crítico */ }
       })();
-
     } catch (err) {
       addToast('error', 'Erro de rede', err instanceof Error ? err.message : 'Erro desconhecido');
+    }
+  }, [carregarInpe, carregarAreasProtegidas, addToast]);
+
+  // Busca
+  const handleSearch = async () => {
+    const query = searchValue.trim();
+    const map = mapRef.current;
+    const resultLayer = resultLayerRef.current;
+    if (!map || !resultLayer || searching) return;
+    if (!query) return;
+
+    // Coordenadas
+    const coords = parseCoordinates(query);
+    if (coords) {
+      resultLayer.clearLayers();
+      neighborsLayerRef.current?.clearLayers();
+      setPropriedade(null); setAnaliseASG(null); setRelatorioASG(null); setResumoASG(null); setInpeStats(null); setAreasProtegidasStats(null);
+      const [lat, lng] = coords;
+      L.circleMarker([lat, lng], { radius: 8, color: '#1263a8', fillColor: '#41b0e4', fillOpacity: 0.9, weight: 2 })
+        .bindPopup(`${lat.toFixed(6)}, ${lng.toFixed(6)}`).addTo(resultLayer).openPopup();
+      map.flyTo([lat, lng], 14, { duration: 0.7 });
+      addToast('info', 'Coordenadas localizadas', `${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+      return;
+    }
+
+    // CAR
+    const cod = query.toUpperCase();
+    setSearching(true);
+    propriedadeViaChat.current = false;
+    addToast('info', 'Consultando...', `Buscando ${cod} no banco e no SICAR`);
+    try {
+      await carregarPropriedadePorCAR(cod);
     } finally {
       setSearching(false);
     }
@@ -727,28 +878,146 @@ export default function App() {
     });
   };
 
-  const handleSendChat = async () => {
-    const msg = chatInput.trim();
+  const handleSendChat = async (overrideMsg?: string) => {
+    const msg = (overrideMsg ?? chatInput).trim();
     if (!msg || chatSending) return;
+
+    // desativa camadas ativadas pelo chat anterior
+    for (const lid of chatActivatedLayersRef.current) {
+      if (layerVisibleRef.current[lid]) void toggleCamada(lid);
+    }
+    chatActivatedLayersRef.current = [];
+    setChatSuggestions([]);
+
     setChatMessages((c) => [...c, { id: Date.now(), role: 'outgoing', text: msg }]);
-    setChatInput('');
+    if (!overrideMsg) setChatInput('');
     setChatSending(true);
     scrollChatToBottom();
     try {
       const resp = await fetch('/busca_semantica/busca/consulta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pergunta: msg, cod_imovel: propriedade?.cod_imovel ?? null }),
+        body: JSON.stringify({
+          pergunta: msg,
+          cod_imovel: propriedade?.cod_imovel ?? null,
+          municipio_contexto: chatContextRef.current.municipio ?? null,
+          intencao_contexto: chatContextRef.current.intencao ?? null,
+        }),
       });
       if (!resp.ok) throw new Error(`status ${resp.status}`);
-      const data = await resp.json() as { resposta?: string };
+      const data = await resp.json() as {
+        resposta?: string;
+        acao?: string;
+        cod_imovel?: string;
+        municipio_detectado?: string;
+        coordenadas_detectadas?: [number, number];
+        intencao_detectada?: string;
+      };
+
       setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: data.resposta ?? 'Sem resposta.' }]);
+
+      chatContextRef.current = {
+        municipio: data.municipio_detectado
+          ?? (data.acao ? chatContextRef.current.municipio : undefined),
+        intencao: data.intencao_detectada ?? chatContextRef.current.intencao,
+      };
+
+      setChatSuggestions(getSuggestions(
+        data.intencao_detectada,
+        !!(data.cod_imovel ?? propriedade?.cod_imovel),
+        data.municipio_detectado ?? chatContextRef.current.municipio,
+      ));
+
+      // sincroniza painéis laterais com o CAR retornado pelo chat
+      if (data.cod_imovel && data.cod_imovel !== propriedadeRef.current?.cod_imovel) {
+        propriedadeViaChat.current = true;
+        void carregarPropriedadePorCAR(data.cod_imovel);
+      } else if (propriedadeViaChat.current && data.acao === 'zoom_municipio') {
+        propriedadeViaChat.current = false;
+        resultLayerRef.current?.clearLayers();
+        neighborsLayerRef.current?.clearLayers();
+        propriedadeRef.current = null;
+        setPropriedade(null);
+        setAnaliseASG(null);
+        setRelatorioASG(null);
+        setResumoASG(null);
+        setInpeStats(null);
+        setAreasProtegidasStats(null);
+      }
+
+      // ativa camadas relacionadas à intenção e registra para reset na próxima pergunta
+      const INTENT_LAYERS: Record<string, LayerId[]> = {
+        desmatamento: ['prodes'],
+        queimada:     ['queimadas'],
+        alerta:       ['deter'],
+        indigena:     ['ti'],
+        conservacao:  ['uc'],
+        comunidades:  ['assentamento', 'quilombola'],
+        relatorio:    ['prodes', 'deter', 'queimadas', 'uc', 'ti', 'assentamento', 'quilombola'],
+      };
+      if (data.intencao_detectada) {
+        const layers = INTENT_LAYERS[data.intencao_detectada] ?? [];
+        const activated: LayerId[] = [];
+        for (const lid of layers) {
+          if (!layerVisibleRef.current[lid]) {
+            void toggleCamada(lid);
+            activated.push(lid);
+          }
+        }
+        chatActivatedLayersRef.current = activated;
+      }
+
+      // zoom no mapa com base na ação retornada pelo chat
+      if (mapRef.current) {
+        const map = mapRef.current;
+        if (data.acao === 'zoom_propriedade') {
+          if (data.cod_imovel && propriedade?.cod_imovel === data.cod_imovel && resultLayerRef.current) {
+            const bounds = resultLayerRef.current.getBounds();
+            if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
+          } else if (data.coordenadas_detectadas) {
+            const [lat, lon] = data.coordenadas_detectadas;
+            map.flyTo([lat, lon], 14, { duration: 0.8 });
+          }
+        } else if (data.acao === 'zoom_municipio' && data.municipio_detectado) {
+          void (async () => {
+            try {
+              const q = encodeURIComponent(`${data.municipio_detectado}, São Paulo, Brasil`);
+              const geo = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1`);
+              const results = await geo.json() as { lat: string; lon: string }[];
+              if (results.length > 0) {
+                map.flyTo([parseFloat(results[0].lat), parseFloat(results[0].lon)], 11, { duration: 1.0 });
+              }
+            } catch { /* silently ignore */ }
+          })();
+        } else if (data.coordenadas_detectadas) {
+          const [lat, lon] = data.coordenadas_detectadas;
+          map.flyTo([lat, lon], 14, { duration: 0.8 });
+        }
+      }
     } catch (err) {
       addToast('error', 'Erro no chat', err instanceof Error ? err.message : 'Falha ao consultar.');
-      setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: 'Erro ao consultar o serviço de busca.' }]);
+      setChatMessages((c) => [...c, { id: Date.now() + 1, role: 'incoming', text: 'Não foi possível conectar ao serviço. Verifique se o backend está rodando ou tente novamente.' }]);
     } finally {
       setChatSending(false);
       scrollChatToBottom();
+    }
+  };
+
+  const handleClearChat = () => {
+    for (const lid of chatActivatedLayersRef.current) {
+      if (layerVisibleRef.current[lid]) void toggleCamada(lid);
+    }
+    chatActivatedLayersRef.current = [];
+    chatContextRef.current = {};
+    setChatMessages([{ id: Date.now(), role: 'incoming', text: 'Nova conversa iniciada. Como posso ajudar?' }]);
+    setChatSuggestions(['Cidades com mais queimadas', 'Maior desmatamento SP', 'Relatório ASG']);
+    if (propriedadeViaChat.current) {
+      propriedadeViaChat.current = false;
+      resultLayerRef.current?.clearLayers();
+      neighborsLayerRef.current?.clearLayers();
+      propriedadeRef.current = null;
+      setPropriedade(null); setAnaliseASG(null); setRelatorioASG(null);
+      setResumoASG(null); setInpeStats(null); setAreasProtegidasStats(null);
     }
   };
 
@@ -971,12 +1240,13 @@ export default function App() {
               <input type="text" value={searchValue}
                 onChange={(e) => setSearchValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void handleSearch(); }}
-                placeholder="Pesquisar CAR"
+                placeholder="Código CAR — ex: SP-3509502-XXXXXXXX"
                 disabled={searching}
               />
               <button type="button" onClick={() => void handleSearch()} disabled={searching}>
                 {searching ? 'Buscando...' : 'Buscar'}
               </button>
+              <small className="search-hint">Ex.: SP-3509502-XXXXXXXX — cole o código CAR completo.</small>
             </div>
 
             <div className="ano-filter-bar">
@@ -1004,11 +1274,12 @@ export default function App() {
                 { id: 'quilombola',   label: 'Quilombolas',   color: '#be185d', count: quilombolaCount,    unit: 'terr.' },
               ] as { id: LayerId; label: string; color: string; count: number | null; unit: string }[]).map(({ id, label, color, count, unit }) => {
                 const on = layerVisible[id];
+                const loading = layerLoadingRef.current[id];
                 const dotClass = count === null ? 'is-checking' : count > 0 ? 'is-available' : 'is-unavailable';
                 return (
                   <button
                     key={id}
-                    className={`layer-btn${on ? ' layer-btn--on' : ''}`}
+                    className={`layer-btn${on ? ' layer-btn--on' : ''}${loading ? ' layer-btn-loading' : ''}`}
                     style={on ? { borderColor: color, color } : undefined}
                     onClick={() => void toggleCamada(id)}
                     title={on ? `Ocultar ${label}` : `Exibir ${label}`}
@@ -1035,14 +1306,25 @@ export default function App() {
           </section>
 
           {/* ── RIGHT ── */}
-          <aside className="shell shell-right">
+          <aside className={`shell shell-right ${rightPanel === 'report-only' ? 'right-panel-report-only' : rightPanel === 'chat-only' ? 'right-panel-chat-only' : ''}`}>
             <div className="right-split-panel">
               <section className="asg-report-panel">
                 <header className="asg-report-header">
                   <h3>Reports ASG</h3>
+                  <button
+                    className={`panel-collapse-btn ${rightPanel === 'report-only' ? 'is-expanded' : ''}`}
+                    onClick={() => toggleRightPanel('report')}
+                    aria-label="Toggle report panel"
+                    aria-pressed={rightPanel === 'report-only'}
+                  >
+                    ▸
+                  </button>
                   <div className="asg-header-actions">
                     {resumoASG && (
-                      <span className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}>
+                      <span
+                        className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}
+                        title={`Risco ${resumoASG.nivel} · ${resumoASG.indice_risco.toFixed(0)}/100`}
+                      >
                         Risco {resumoASG.nivel} · {resumoASG.indice_risco.toFixed(0)}/100
                       </span>
                     )}
@@ -1089,21 +1371,29 @@ export default function App() {
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
 
-                  {relatorioASG ? (
+                  {rightPanel !== 'chat-only' && (relatorioASG ? (
                     <div className="asg-indicadores">
                       {(['Ambiental', 'Social', 'Governança'] as const).map((cat) => {
                         const itens = relatorioASG.indicadores.filter(i => i.categoria === cat);
                         if (!itens.length) return null;
                         return (
-                          <div key={cat} className="asg-categoria-group">
+                          <div
+                            key={cat}
+                            className={`asg-categoria-group asg-categoria-${cat.toLowerCase()}`}
+                          >
                             <span className="asg-categoria-label">{cat}</span>
                             {itens.map((ind, idx) => (
                               <div key={idx} className="asg-indicador-row">
                                 <div className="asg-indicador-main">
                                   <span className="asg-indicador-nome">{ind.nome}</span>
-                                  <span className={`asg-status-badge asg-status-${ind.status}`}>
-                                    {ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente'}
-                                  </span>
+                                  {(() => {
+                                    const statusLabel = ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente';
+                                    return (
+                                      <span className={`asg-status-badge asg-status-${ind.status}`} title={statusLabel}>
+                                        {statusLabel}
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="asg-indicador-valor">
                                   {ind.valor != null
@@ -1113,7 +1403,7 @@ export default function App() {
                                       : <span>—</span>
                                   }
                                   {ind.valor != null && ind.detalhe && (
-                                    <span className="asg-indicador-detalhe">{ind.detalhe}</span>
+                                    <span className="asg-indicador-detalhe" title={String(ind.detalhe)}>{ind.detalhe}</span>
                                   )}
                                 </div>
                                 <div className="asg-indicador-meta">
@@ -1130,30 +1420,42 @@ export default function App() {
                       <span className="asg-loading-text">Carregando indicadores ASG...</span>
                     </div>
                   ) : (
-                    <div className="unavailable-panel">
-                      <span className="unavailable-panel-icon">
-                        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
-                      </span>
+                    <div className="asg-empty-state">
                       <div>
                         <strong>Relatório ASG</strong>
                         <p>Busque um imóvel pelo código CAR para visualizar os indicadores ASG.</p>
                       </div>
                     </div>
-                  )}
+                  ))}
                 </div>
               </section>
 
               <section className="chat-placeholder">
                 <header className="chat-placeholder-header">
                   <h3>Chat ASG</h3>
-                  {propriedade && <span>{propriedade.cod_imovel}</span>}
+                  <button
+                    className={`panel-collapse-btn ${rightPanel === 'chat-only' ? 'is-expanded' : ''}`}
+                    onClick={() => toggleRightPanel('chat')}
+                    aria-label="Toggle chat panel"
+                    aria-pressed={rightPanel === 'chat-only'}
+                  >
+                    ▸
+                  </button>
+                  {propriedade && <span title={propriedade.cod_imovel}>{propriedade.cod_imovel}</span>}
+                  <button
+                    type="button"
+                    className="chat-clear-btn"
+                    onClick={handleClearChat}
+                    title="Nova conversa"
+                    aria-label="Nova conversa"
+                  >
+                    <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.72"/></svg>
+                  </button>
                 </header>
                 <div className="chat-placeholder-body" ref={chatBodyRef}>
-                  {chatMessages.map((m) => (
+                  {rightPanel !== 'report-only' && chatMessages.map((m) => (
                     <div key={m.id} className={`chat-bubble chat-bubble-${m.role}`}>
-                      {m.text.split('\n').map((line, i) => (
-                        <span key={i}>{line}{i < m.text.split('\n').length - 1 && <br />}</span>
-                      ))}
+                      {renderChatText(m.text, m.role === 'incoming' ? carregarPropriedadePorCAR : undefined)}
                     </div>
                   ))}
                   {chatSending && (
@@ -1161,19 +1463,37 @@ export default function App() {
                       <span className="chat-dot" /><span className="chat-dot" /><span className="chat-dot" />
                     </div>
                   )}
+                  {chatSuggestions.length > 0 && !chatSending && (
+                    <div className="chat-suggestions">
+                      {chatSuggestions.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          className="chat-suggestion-btn"
+                          onClick={() => void handleSendChat(s)}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <footer className="chat-placeholder-footer">
-                  <input
-                    type="text"
-                    placeholder={propriedade ? 'Pergunte sobre esta propriedade...' : 'Busque um CAR primeiro...'}
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
-                    disabled={!propriedade || chatSending}
-                  />
-                  <button type="button" onClick={() => void handleSendChat()} disabled={!propriedade || !chatInput.trim() || chatSending}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
-                  </button>
+                  {rightPanel !== 'report-only' && (
+                    <>
+                      <input
+                        type="text"
+                        placeholder={propriedade ? `Pergunte sobre ${propriedade.cod_imovel}...` : 'Pergunte sobre municípios, coordenadas, desmatamento...'}
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
+                        disabled={chatSending}
+                      />
+                      <button type="button" onClick={() => void handleSendChat()} disabled={!chatInput.trim() || chatSending}>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+                      </button>
+                    </>
+                  )}
                 </footer>
               </section>
             </div>
