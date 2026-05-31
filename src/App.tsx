@@ -317,6 +317,7 @@ function parseCoordinates(input: string): [number, number] | null {
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [rightPanel, setRightPanel] = useState<'both' | 'report-only' | 'chat-only'>('both');
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
@@ -382,9 +383,9 @@ export default function App() {
     uc: false, ti: false, assentamento: false, quilombola: false,
   };
   const [layerVisible, setLayerVisible] = useState<Record<LayerId, boolean>>(_initLayers);
-  // Ref sempre atualizado — evita stale closure em callbacks assíncronos
   const layerVisibleRef = useRef<Record<LayerId, boolean>>({ ..._initLayers });
   const layerLoadingRef = useRef<Record<LayerId, boolean>>({ ..._initLayers });
+  const [, forceLayerLoadingRender] = useState(0);
 
   // Toast helpers
   const dismissToast = useCallback((id: number) => {
@@ -393,8 +394,15 @@ export default function App() {
 
   const addToast = useCallback((type: ToastType, title: string, message?: string) => {
     const id = Date.now() + Math.random();
-    setToasts((prev) => [...prev, { id, type, title, message }]);
+    setToasts((prev) => [...prev.slice(-2), { id, type, title, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_DURATION);
+  }, []);
+
+  const toggleRightPanel = useCallback((which: 'report' | 'chat') => {
+    setRightPanel((prev) => {
+      if (which === 'report') return prev === 'report-only' ? 'both' : 'report-only';
+      return prev === 'chat-only' ? 'both' : 'chat-only';
+    });
   }, []);
 
   // Favicon
@@ -580,6 +588,7 @@ export default function App() {
     if (!isOn) { layerLoadingRef.current[id] = false; layer.clearLayers(); return; }
     if (layerLoadingRef.current[id]) return;
     layerLoadingRef.current[id] = true;
+    forceLayerLoadingRender((v) => v + 1);
     layer.clearLayers();
 
     const configs: Record<LayerId, { url: string; render: (f: InpeFeature, layer: L.LayerGroup) => void }> = {
@@ -656,6 +665,7 @@ export default function App() {
       for (const f of list) configs[id].render(f, layer);
     } catch { /* silently ignore */ } finally {
       layerLoadingRef.current[id] = false;
+      forceLayerLoadingRender((v) => v + 1);
     }
   }, []);
 
@@ -1166,12 +1176,13 @@ export default function App() {
               <input type="text" value={searchValue}
                 onChange={(e) => setSearchValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void handleSearch(); }}
-                placeholder="Pesquisar CAR"
+                placeholder="Código CAR — ex: SP-3509502-XXXXXXXX"
                 disabled={searching}
               />
               <button type="button" onClick={() => void handleSearch()} disabled={searching}>
                 {searching ? 'Buscando...' : 'Buscar'}
               </button>
+              <small className="search-hint">Ex.: SP-3509502-XXXXXXXX — cole o código CAR completo.</small>
             </div>
 
             <div className="layer-toolbar">
@@ -1185,11 +1196,12 @@ export default function App() {
                 { id: 'quilombola',   label: 'Quilombolas',   color: '#be185d', count: quilombolaCount,    unit: 'terr.' },
               ] as { id: LayerId; label: string; color: string; count: number | null; unit: string }[]).map(({ id, label, color, count, unit }) => {
                 const on = layerVisible[id];
+                const loading = layerLoadingRef.current[id];
                 const dotClass = count === null ? 'is-checking' : count > 0 ? 'is-available' : 'is-unavailable';
                 return (
                   <button
                     key={id}
-                    className={`layer-btn${on ? ' layer-btn--on' : ''}`}
+                    className={`layer-btn${on ? ' layer-btn--on' : ''}${loading ? ' layer-btn-loading' : ''}`}
                     style={on ? { borderColor: color, color } : undefined}
                     onClick={() => void toggleCamada(id)}
                     title={on ? `Ocultar ${label}` : `Exibir ${label}`}
@@ -1216,14 +1228,25 @@ export default function App() {
           </section>
 
           {/* ── RIGHT ── */}
-          <aside className="shell shell-right">
+          <aside className={`shell shell-right ${rightPanel === 'report-only' ? 'right-panel-report-only' : rightPanel === 'chat-only' ? 'right-panel-chat-only' : ''}`}>
             <div className="right-split-panel">
               <section className="asg-report-panel">
                 <header className="asg-report-header">
                   <h3>Reports ASG</h3>
+                  <button
+                    className={`panel-collapse-btn ${rightPanel === 'report-only' ? 'is-expanded' : ''}`}
+                    onClick={() => toggleRightPanel('report')}
+                    aria-label="Toggle report panel"
+                    aria-pressed={rightPanel === 'report-only'}
+                  >
+                    ▸
+                  </button>
                   <div className="asg-header-actions">
                     {resumoASG && (
-                      <span className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}>
+                      <span
+                        className={`asg-risco-badge asg-risco-${resumoASG.nivel}`}
+                        title={`Risco ${resumoASG.nivel} · ${resumoASG.indice_risco.toFixed(0)}/100`}
+                      >
                         Risco {resumoASG.nivel} · {resumoASG.indice_risco.toFixed(0)}/100
                       </span>
                     )}
@@ -1245,21 +1268,29 @@ export default function App() {
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
 
-                  {relatorioASG ? (
+                  {rightPanel !== 'chat-only' && (relatorioASG ? (
                     <div className="asg-indicadores">
                       {(['Ambiental', 'Social', 'Governança'] as const).map((cat) => {
                         const itens = relatorioASG.indicadores.filter(i => i.categoria === cat);
                         if (!itens.length) return null;
                         return (
-                          <div key={cat} className="asg-categoria-group">
+                          <div
+                            key={cat}
+                            className={`asg-categoria-group asg-categoria-${cat.toLowerCase()}`}
+                          >
                             <span className="asg-categoria-label">{cat}</span>
                             {itens.map((ind, idx) => (
                               <div key={idx} className="asg-indicador-row">
                                 <div className="asg-indicador-main">
                                   <span className="asg-indicador-nome">{ind.nome}</span>
-                                  <span className={`asg-status-badge asg-status-${ind.status}`}>
-                                    {ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente'}
-                                  </span>
+                                  {(() => {
+                                    const statusLabel = ind.status === 'ok' ? 'OK' : ind.status === 'atencao' ? 'Atenção' : ind.status === 'critico' ? 'Crítico' : 'Pendente';
+                                    return (
+                                      <span className={`asg-status-badge asg-status-${ind.status}`} title={statusLabel}>
+                                        {statusLabel}
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="asg-indicador-valor">
                                   {ind.valor != null
@@ -1269,7 +1300,7 @@ export default function App() {
                                       : <span>—</span>
                                   }
                                   {ind.valor != null && ind.detalhe && (
-                                    <span className="asg-indicador-detalhe">{ind.detalhe}</span>
+                                    <span className="asg-indicador-detalhe" title={String(ind.detalhe)}>{ind.detalhe}</span>
                                   )}
                                 </div>
                                 <div className="asg-indicador-meta">
@@ -1286,23 +1317,28 @@ export default function App() {
                       <span className="asg-loading-text">Carregando indicadores ASG...</span>
                     </div>
                   ) : (
-                    <div className="unavailable-panel">
-                      <span className="unavailable-panel-icon">
-                        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round"/></svg>
-                      </span>
+                    <div className="asg-empty-state">
                       <div>
                         <strong>Relatório ASG</strong>
                         <p>Busque um imóvel pelo código CAR para visualizar os indicadores ASG.</p>
                       </div>
                     </div>
-                  )}
+                  ))}
                 </div>
               </section>
 
               <section className="chat-placeholder">
                 <header className="chat-placeholder-header">
                   <h3>Chat ASG</h3>
-                  {propriedade && <span>{propriedade.cod_imovel}</span>}
+                  <button
+                    className={`panel-collapse-btn ${rightPanel === 'chat-only' ? 'is-expanded' : ''}`}
+                    onClick={() => toggleRightPanel('chat')}
+                    aria-label="Toggle chat panel"
+                    aria-pressed={rightPanel === 'chat-only'}
+                  >
+                    ▸
+                  </button>
+                  {propriedade && <span title={propriedade.cod_imovel}>{propriedade.cod_imovel}</span>}
                   <button
                     type="button"
                     className="chat-clear-btn"
@@ -1314,7 +1350,7 @@ export default function App() {
                   </button>
                 </header>
                 <div className="chat-placeholder-body" ref={chatBodyRef}>
-                  {chatMessages.map((m) => (
+                  {rightPanel !== 'report-only' && chatMessages.map((m) => (
                     <div key={m.id} className={`chat-bubble chat-bubble-${m.role}`}>
                       {renderChatText(m.text, m.role === 'incoming' ? carregarPropriedadePorCAR : undefined)}
                     </div>
@@ -1340,17 +1376,21 @@ export default function App() {
                   )}
                 </div>
                 <footer className="chat-placeholder-footer">
-                  <input
-                    type="text"
-                    placeholder={propriedade ? `Pergunte sobre ${propriedade.cod_imovel}...` : 'Pergunte sobre municípios, coordenadas, desmatamento...'}
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
-                    disabled={chatSending}
-                  />
-                  <button type="button" onClick={() => void handleSendChat()} disabled={!chatInput.trim() || chatSending}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
-                  </button>
+                  {rightPanel !== 'report-only' && (
+                    <>
+                      <input
+                        type="text"
+                        placeholder={propriedade ? `Pergunte sobre ${propriedade.cod_imovel}...` : 'Pergunte sobre municípios, coordenadas, desmatamento...'}
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void handleSendChat(); }}
+                        disabled={chatSending}
+                      />
+                      <button type="button" onClick={() => void handleSendChat()} disabled={!chatInput.trim() || chatSending}>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+                      </button>
+                    </>
+                  )}
                 </footer>
               </section>
             </div>
