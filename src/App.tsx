@@ -46,6 +46,12 @@ type InpeStats = {
   focos: number;
 };
 
+type SobreposicaoProdes = {
+  n_poligonos: number;
+  area_ha: number;
+  por_ano: { ano: number; area_ha: number }[];
+};
+
 type AreasProtegidasStats = {
   uc: { cod_uc: string; nome?: string }[];
   ti: { cod_ti: string; nome?: string; etnia?: string }[];
@@ -327,7 +333,9 @@ export default function App() {
   const [relatorioASG, setRelatorioASG] = useState<RelatorioASG | null>(null);
   const [resumoASG, setResumoASG] = useState<ResumoASGConsolidado | null>(null);
   const [inpeStats, setInpeStats] = useState<InpeStats | null>(null);
+  const [sobreposicaoProdes, setSobreposicaoProdes] = useState<SobreposicaoProdes | null>(null);
   const [areasProtegidasStats, setAreasProtegidasStats] = useState<AreasProtegidasStats | null>(null);
+  const [filtroAno, setFiltroAno] = useState<number | null>(null);
   const [dbStatus, setDbStatus] = useState<DbStatus>('checking');
   const [dbMessage, setDbMessage] = useState('Verificando banco...');
   const [inpeProdesCount, setInpeProdesCount] = useState<number | null>(null);
@@ -497,6 +505,18 @@ export default function App() {
     deterLayerRef.current?.clearLayers();
     focosLayerRef.current?.clearLayers();
     setInpeStats(null);
+    setSobreposicaoProdes(null);
+
+    // Sobreposição PRODES — área real de interseção via ST_Intersection + ST_Area(geography)
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/gerenciamento_banco/banco/desmatamento-prodes/sobreposicao/${encodeURIComponent(codImovel)}`
+        );
+        if (!r.ok) return;
+        setSobreposicaoProdes(await r.json() as SobreposicaoProdes);
+      } catch { /* silently ignore */ }
+    })();
 
     // PRODES — ST_Intersects com a propriedade (laranja)
     void (async () => {
@@ -573,27 +593,22 @@ export default function App() {
     })();
   }, [addToast]);
 
-  const toggleCamada = useCallback(async (id: LayerId) => {
-    const isOn = !layerVisibleRef.current[id];
-    layerVisibleRef.current = { ...layerVisibleRef.current, [id]: isOn };
-    setLayerVisible(prev => ({ ...prev, [id]: isOn }));
-
+  const carregarCamada = useCallback(async (id: LayerId) => {
     const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
       prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
       uc: ucLayerRef, ti: tiLayerRef, assentamento: assentamentoLayerRef, quilombola: quilombolaLayerRef,
     };
     const layer = layerMap[id].current;
     if (!layer) return;
-
-    if (!isOn) { layerLoadingRef.current[id] = false; layer.clearLayers(); return; }
     if (layerLoadingRef.current[id]) return;
     layerLoadingRef.current[id] = true;
     forceLayerLoadingRender((v) => v + 1);
     layer.clearLayers();
 
+    const anoParam = filtroAno ? `&ano=${filtroAno}` : '';
     const configs: Record<LayerId, { url: string; render: (f: InpeFeature, layer: L.LayerGroup) => void }> = {
       prodes: {
-        url: '/gerenciamento_banco/banco/desmatamento-prodes?uf=SP&limit=1000',
+        url: `/gerenciamento_banco/banco/desmatamento-prodes?uf=SP&limit=1000${anoParam}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -602,7 +617,7 @@ export default function App() {
         },
       },
       deter: {
-        url: '/gerenciamento_banco/banco/alerta-deter?uf=SP&limit=1000',
+        url: `/gerenciamento_banco/banco/alerta-deter?uf=SP&limit=1000${anoParam}`,
         render: (f, l) => {
           if (!f.geometria) return;
           L.geoJSON(f.geometria as GeoJSON.Geometry, {
@@ -667,7 +682,31 @@ export default function App() {
       layerLoadingRef.current[id] = false;
       forceLayerLoadingRender((v) => v + 1);
     }
-  }, []);
+  }, [filtroAno]);
+
+  const toggleCamada = useCallback(async (id: LayerId) => {
+    const isOn = !layerVisibleRef.current[id];
+    layerVisibleRef.current = { ...layerVisibleRef.current, [id]: isOn };
+    setLayerVisible(prev => ({ ...prev, [id]: isOn }));
+
+    const layerMap: Record<LayerId, React.MutableRefObject<L.LayerGroup | null>> = {
+      prodes: prodesLayerRef, deter: deterLayerRef, queimadas: focosLayerRef,
+      uc: ucLayerRef, ti: tiLayerRef, assentamento: assentamentoLayerRef, quilombola: quilombolaLayerRef,
+    };
+    const layer = layerMap[id].current;
+    if (!layer) return;
+    if (!isOn) { layer.clearLayers(); return; }
+    await carregarCamada(id);
+  }, [carregarCamada]);
+
+  const filtroAnoAnteriorRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (filtroAnoAnteriorRef.current === filtroAno) return;
+    filtroAnoAnteriorRef.current = filtroAno;
+    (['prodes', 'deter'] as LayerId[]).forEach((id) => {
+      if (layerVisibleRef.current[id]) void carregarCamada(id);
+    });
+  }, [filtroAno, carregarCamada]);
 
   const carregarAreasProtegidas = useCallback(async (codImovel: string) => {
     setAreasProtegidasStats(null);
@@ -709,6 +748,7 @@ export default function App() {
     setRelatorioASG(null);
     setResumoASG(null);
     setInpeStats(null);
+    setSobreposicaoProdes(null);
     setAreasProtegidasStats(null);
     propriedadeRef.current = null;
 
@@ -1121,15 +1161,39 @@ export default function App() {
                 </div>
               )}
 
+              {propriedade?.area != null && sobreposicaoProdes && (() => {
+                const areaTotal = propriedade.area!;
+                const pct = areaTotal > 0 ? (sobreposicaoProdes.area_ha / areaTotal) * 100 : 0;
+                const cor = pct < 5 ? '#059669' : pct <= 20 ? '#d97706' : '#dc2626';
+                return (
+                  <div className="data-status-row">
+                    <div className="data-status-header">
+                      <span className="data-status-dot" style={{ background: cor }} />
+                      <strong className="data-status-label">Área afetada por PRODES</strong>
+                    </div>
+                    <div className="afetada-wrap">
+                      <div className="afetada-header">
+                        <span style={{ color: cor, fontWeight: 600 }}>{pct.toFixed(1)}%</span>
+                      </div>
+                      <div className="afetada-bar-track">
+                        <div className="afetada-bar-fill"
+                             style={{ width: `${Math.min(pct, 100)}%`, background: cor }} />
+                      </div>
+                      <span className="data-status-message">
+                        {sobreposicaoProdes.area_ha.toFixed(2)} ha de {areaTotal.toFixed(2)} ha totais ·{' '}
+                        {sobreposicaoProdes.n_poligonos} polígono(s)
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {inpeStats && (
                 <div className="data-status-row">
                   <div className="data-status-header">
                     <span className="data-status-dot" style={{ background: '#d97706' }} />
                     <strong className="data-status-label">Sobreposição INPE na propriedade</strong>
                   </div>
-                  <span className="data-status-message" style={{ color: '#d97706' }}>
-                    PRODES: {inpeStats.prodes} polígono(s) · {inpeStats.prodes_area_ha} ha
-                  </span>
                   <span className="data-status-message" style={{ color: '#dc2626' }}>
                     DETER: {inpeStats.deter} alerta(s) sobrepostos
                   </span>
@@ -1183,6 +1247,20 @@ export default function App() {
                 {searching ? 'Buscando...' : 'Buscar'}
               </button>
               <small className="search-hint">Ex.: SP-3509502-XXXXXXXX — cole o código CAR completo.</small>
+            </div>
+
+            <div className="ano-filter-bar">
+              {([null, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024] as (number | null)[]).map((a) => (
+                <button
+                  key={a ?? 'all'}
+                  type="button"
+                  className={`ano-btn${filtroAno === a ? ' ano-btn--active' : ''}`}
+                  onClick={() => setFiltroAno(a)}
+                  title={a ? `Filtrar PRODES/DETER por ${a}` : 'Mostrar todos os anos'}
+                >
+                  {a ?? 'Todos'}
+                </button>
+              ))}
             </div>
 
             <div className="layer-toolbar">
@@ -1261,9 +1339,34 @@ export default function App() {
                         GPKG
                       </a>
                     )}
+                    {propriedade && relatorioASG && (
+                      <button
+                        type="button"
+                        className="asg-export-btn"
+                        onClick={() => window.print()}
+                        title="Exportar relatório em PDF (Ctrl+P)"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                          <polyline points="14 2 14 8 20 8"/>
+                        </svg>
+                        PDF
+                      </button>
+                    )}
                   </div>
                 </header>
                 <div className="asg-report-content">
+                  {propriedade && (
+                    <div className="print-only-header">
+                      <h2>Relatório ASG · {propriedade.cod_imovel}</h2>
+                      <p>
+                        {propriedade.municipio ?? ''}
+                        {propriedade.uf ? `/${propriedade.uf}` : ''}
+                        {propriedade.area != null ? ` · ${propriedade.area.toFixed(2)} ha` : ''}
+                      </p>
+                      <p>Gerado em {new Date().toLocaleString('pt-BR')}</p>
+                    </div>
+                  )}
                   {propriedade?.status_imovel && (
                     <CarStatusBadge status={propriedade.status_imovel} />
                   )}
